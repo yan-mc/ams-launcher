@@ -1,40 +1,88 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
 type EnvItem = { label: string; value: string; ok: boolean };
+type GatewayInfo = {
+  installed: boolean;
+  running: boolean;
+  healthy: boolean;
+  port: number;
+  version: string;
+  jobs: number;
+  home: string;
+  gateway_dir: string;
+  message: string;
+};
+type ComponentItem = { name: string; state: string; detail: string; ok: boolean };
 
-const version = ref("0.1.1 (M0.2+)");
+const version = ref("0.1.2");
 const loading = ref(false);
+const busy = ref("");
 const error = ref("");
-const checks = ref<EnvItem[]>([
-  { label: "环境检测", value: "正在读取…", ok: false },
-]);
-const status = ref([
-  { name: "内核（DSH fork）", state: "已构建", detail: "M0.1 构建通过；启动集成待做" },
-  { name: "Gateway", state: "已实现", detail: "M0.3 23 测试通过；启动集成待做" },
-  { name: "音源库", state: "已校验", detail: "默认音源：曼波（M0.4）" },
-  { name: "更新中心", state: "工具就绪", detail: "签名工具 M0.8；UI 待接" },
-]);
+const checks = ref<EnvItem[]>([{ label: "环境检测", value: "正在读取…", ok: false }]);
+const gateway = ref<GatewayInfo | null>(null);
+const components = ref<ComponentItem[]>([]);
+let timer: number | undefined;
 
-async function refresh() {
+async function refreshEnv() {
   loading.value = true;
   error.value = "";
   try {
     checks.value = await invoke<EnvItem[]>("get_environment");
-    const v = await invoke<string>("app_version");
-    version.value = v + " (M0.2+)";
+    version.value = await invoke<string>("app_version");
   } catch (e) {
     error.value = String(e);
-    checks.value = [
-      { label: "运行环境", value: "浏览器预览模式（无法读取本机信息）", ok: false },
-    ];
+    checks.value = [{ label: "运行环境", value: "浏览器预览模式（无法读取本机信息）", ok: false }];
   } finally {
     loading.value = false;
   }
 }
 
-onMounted(refresh);
+async function refreshGateway() {
+  try {
+    gateway.value = await invoke<GatewayInfo>("gateway_status");
+    components.value = await invoke<ComponentItem[]>("component_status");
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function startGateway() {
+  busy.value = "正在启动 Gateway…";
+  error.value = "";
+  try {
+    const message = await invoke<string>("start_gateway");
+    busy.value = message;
+    setTimeout(() => { refreshGateway(); busy.value = ""; }, 2500);
+  } catch (e) {
+    error.value = String(e);
+    busy.value = "";
+  }
+}
+
+async function stopGateway() {
+  busy.value = "正在停止 Gateway…";
+  try {
+    busy.value = await invoke<string>("stop_gateway");
+    setTimeout(() => { refreshGateway(); busy.value = ""; }, 1200);
+  } catch (e) {
+    error.value = String(e);
+    busy.value = "";
+  }
+}
+
+async function refreshAll() {
+  await Promise.all([refreshEnv(), refreshGateway()]);
+}
+
+onMounted(() => {
+  refreshAll();
+  timer = window.setInterval(refreshGateway, 5000);
+});
+onUnmounted(() => {
+  if (timer !== undefined) window.clearInterval(timer);
+});
 </script>
 
 <template>
@@ -42,7 +90,7 @@ onMounted(refresh);
     <header>
       <div>
         <h1>AMS Studio</h1>
-        <p class="sub">AI Music Studio · Launcher <span class="tag">M0.2+</span></p>
+        <p class="sub">AI Music Studio · Launcher <span class="tag">M1</span></p>
       </div>
       <span class="ver">v{{ version }}</span>
     </header>
@@ -50,36 +98,43 @@ onMounted(refresh);
     <section class="grid">
       <div class="card">
         <h2>环境检测</h2>
-        <p v-if="error" class="err">读取失败：{{ error }}</p>
+        <p v-if="error" class="err">{{ error }}</p>
         <ul>
           <li v-for="c in checks" :key="c.label">
             <span>{{ c.label }}</span>
             <b :class="c.ok ? 'ok' : 'warn'">{{ c.value }}</b>
           </li>
         </ul>
-        <button :disabled="loading" @click="refresh">{{ loading ? "检测中…" : "重新检测" }}</button>
+        <button :disabled="loading" @click="refreshEnv">{{ loading ? "检测中…" : "重新检测" }}</button>
       </div>
+
       <div class="card">
+        <h2>Gateway</h2>
+        <ul v-if="gateway">
+          <li><span>状态</span><b :class="gateway.healthy ? 'ok' : gateway.installed ? 'warn' : 'bad'">{{ gateway.healthy ? "运行中" : gateway.installed ? "已安装未运行" : "未安装" }}</b></li>
+          <li><span>端口</span><b>{{ gateway.port || "—" }}</b></li>
+          <li><span>版本 / 任务</span><b>{{ gateway.version || "—" }} / {{ gateway.jobs }}</b></li>
+          <li><span>数据目录</span><b>{{ gateway.home }}</b></li>
+          <li v-if="gateway.message"><span>说明</span><b class="warn">{{ gateway.message }}</b></li>
+        </ul>
+        <p v-if="busy" class="note">{{ busy }}</p>
+        <div class="row">
+          <button :disabled="!gateway?.installed || gateway?.healthy" @click="startGateway">启动</button>
+          <button :disabled="!gateway?.running" @click="stopGateway">停止</button>
+          <button @click="refreshGateway">刷新</button>
+        </div>
+      </div>
+
+      <div class="card wide">
         <h2>组件状态</h2>
         <ul>
-          <li v-for="s in status" :key="s.name">
-            <span>{{ s.name }}</span>
-            <b :class="s.state.includes('已') ? 'ok' : 'warn'">{{ s.state }}</b>
-            <small>{{ s.detail }}</small>
+          <li v-for="c in components" :key="c.name">
+            <span>{{ c.name }}</span>
+            <b :class="c.ok ? 'ok' : 'warn'">{{ c.state }}</b>
+            <small>{{ c.detail }}</small>
           </li>
         </ul>
-      </div>
-      <div class="card wide">
-        <h2>M0 已完成</h2>
-        <ol>
-          <li>工具链 / 7 个私有仓库</li>
-          <li>DSH fork 构建 + Web 200</li>
-          <li>启动器 exe + NSIS + MSI</li>
-          <li>Gateway 23 测试 / 默认曼波音源</li>
-          <li>MSVC → pth 3/3 / 插件闭环 12/12</li>
-          <li>RVC 换声 / pymss CPU 分离冒烟</li>
-        </ol>
-        <p class="note">下一步：M0.9 CI/签名/备份 → 启动器接 Gateway/内核 → M1 功能页面。</p>
+        <p class="note">M0 已完成：DSH fork 构建 / 启动器打包 / Gateway 23 测试 / 默认曼波 / MSVC 3/3 / 插件闭环 12/12 / RVC+pymss 冒烟 / CI / 备份。</p>
       </div>
     </section>
   </main>
@@ -89,7 +144,7 @@ onMounted(refresh);
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin: 0; background: #14161a; color: #e6e8eb; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
-.app { max-width: 1080px; margin: 0 auto; padding: 28px 32px; }
+.app { max-width: 1120px; margin: 0 auto; padding: 28px 32px; }
 header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 22px; }
 h1 { margin: 0; font-size: 30px; font-weight: 650; letter-spacing: .5px; }
 .sub { margin: 6px 0 0; color: #9aa3ad; font-size: 13px; }
@@ -103,11 +158,11 @@ ul { list-style: none; margin: 0; padding: 0; }
 li { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid #232830; font-size: 13px; }
 li:last-child { border-bottom: 0; }
 li b { font-weight: 600; color: #dfe6ee; word-break: break-all; text-align: right; }
-li small { flex-basis: 100%; color: #7f8994; }
-.ok { color: #6fd08c; } .warn { color: #e0b25a; }
+li small { flex-basis: 100%; color: #7f8994; word-break: break-all; }
+.ok { color: #6fd08c; } .warn { color: #e0b25a; } .bad { color: #d97a7a; }
 .err { color: #e07777; font-size: 12px; }
+.note { color: #8a949e; font-size: 12px; margin-top: 10px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
 button { margin-top: 12px; background: #263244; color: #9fb6d4; border: 1px solid #33445c; border-radius: 6px; padding: 7px 12px; }
-button:disabled { opacity: .55; }
-ol { margin: 0; padding-left: 20px; color: #c4ccd5; font-size: 13px; line-height: 1.9; }
-.note { color: #7f8994; font-size: 12px; margin-top: 10px; }
+button:disabled { opacity: .45; }
 </style>
