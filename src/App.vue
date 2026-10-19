@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 type EnvItem = { label: string; value: string; ok: boolean };
 type GatewayInfo = {
@@ -16,6 +17,7 @@ type GatewayInfo = {
 };
 type ComponentItem = { name: string; state: string; detail: string; ok: boolean };
 type VoiceInfo = { name: string; status: string; info: string; sr: string; size_mb: number; has_index: boolean; message: string };
+type KernelInfo = { installed: boolean; running: boolean; starting: boolean; url: string; port: number; pid: number; dsh_home: string; log: string; message: string };
 
 const version = ref("0.1.2");
 const loading = ref(false);
@@ -27,6 +29,8 @@ const components = ref<ComponentItem[]>([]);
 const voices = ref<VoiceInfo[]>([]);
 const voiceMsg = ref("");
 const voiceBusy = ref(false);
+const kernel = ref<KernelInfo | null>(null);
+const kernelMsg = ref("");
 let timer: number | undefined;
 
 async function refreshEnv() {
@@ -41,6 +45,37 @@ async function refreshEnv() {
   } finally {
     loading.value = false;
   }
+}
+
+async function refreshKernel() {
+  try {
+    kernel.value = await invoke<KernelInfo>("kernel_status");
+  } catch (e) {
+    kernelMsg.value = String(e);
+  }
+}
+
+async function startKernel() {
+  kernelMsg.value = "正在启动内核…";
+  try {
+    kernelMsg.value = await invoke<string>("start_kernel");
+    setTimeout(refreshKernel, 3000);
+  } catch (e) {
+    kernelMsg.value = "启动失败：" + String(e);
+  }
+}
+
+async function stopKernel() {
+  try {
+    kernelMsg.value = await invoke<string>("stop_kernel");
+    await refreshKernel();
+  } catch (e) {
+    kernelMsg.value = "停止失败：" + String(e);
+  }
+}
+
+async function openKernel() {
+  if (kernel.value?.url) await openUrl(kernel.value.url);
 }
 
 async function refreshGateway() {
@@ -100,12 +135,12 @@ async function stopGateway() {
 }
 
 async function refreshAll() {
-  await Promise.all([refreshEnv(), refreshGateway()]);
+  await Promise.all([refreshEnv(), refreshGateway(), refreshKernel()]);
 }
 
 onMounted(() => {
   refreshAll();
-  timer = window.setInterval(refreshGateway, 5000);
+  timer = window.setInterval(() => { refreshGateway(); refreshKernel(); }, 5000);
 });
 onUnmounted(() => {
   if (timer !== undefined) window.clearInterval(timer);
@@ -133,6 +168,24 @@ onUnmounted(() => {
           </li>
         </ul>
         <button :disabled="loading" @click="refreshEnv">{{ loading ? "检测中…" : "重新检测" }}</button>
+      </div>
+
+      <div class="card">
+        <h2>内核（DSH）</h2>
+        <ul v-if="kernel">
+          <li><span>状态</span><b :class="kernel.running ? 'ok' : kernel.starting ? 'warn' : 'bad'">{{ kernel.running ? "运行中" : kernel.starting ? "启动中" : "未运行" }}</b></li>
+          <li><span>端口</span><b>{{ kernel.port || "—" }}</b></li>
+          <li><span>PID</span><b>{{ kernel.pid || "—" }}</b></li>
+          <li><span>DSH_HOME</span><b>{{ kernel.dsh_home }}</b></li>
+          <li v-if="kernel.message"><span>说明</span><b class="warn">{{ kernel.message }}</b></li>
+        </ul>
+        <p v-if="kernelMsg" class="note">{{ kernelMsg }}</p>
+        <div class="row">
+          <button :disabled="!kernel?.installed || kernel?.running || kernel?.starting" @click="startKernel">启动内核</button>
+          <button :disabled="!kernel?.running && !kernel?.starting" @click="stopKernel">停止</button>
+          <button :disabled="!kernel?.url" @click="openKernel">打开内核</button>
+          <button @click="refreshKernel">刷新</button>
+        </div>
       </div>
 
       <div class="card">

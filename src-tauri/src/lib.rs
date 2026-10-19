@@ -44,6 +44,19 @@ struct VoiceInfo {
 }
 
 #[derive(Serialize, Clone)]
+struct KernelInfo {
+    installed: bool,
+    running: bool,
+    starting: bool,
+    url: String,
+    port: u16,
+    pid: u32,
+    dsh_home: String,
+    log: String,
+    message: String,
+}
+
+#[derive(Serialize, Clone)]
 struct ComponentItem {
     name: String,
     state: String,
@@ -392,6 +405,183 @@ fn install_default_voice() -> Result<String, String> {
     Ok(message + "；可在 Gateway 启动后扫描")
 }
 
+
+fn runtime_dir() -> PathBuf {
+    ams_home().join("runtime")
+}
+
+fn kernel_log_path() -> PathBuf {
+    runtime_dir().join("kernel.log")
+}
+
+fn kernel_json_path() -> PathBuf {
+    runtime_dir().join("kernel.json")
+}
+
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    let path = env::var_os("PATH")?;
+    for dir in env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn process_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let output = Command::new("tasklist.exe")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output();
+    match output {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            text.contains(&pid.to_string())
+        }
+        Err(_) => false,
+    }
+}
+
+fn read_kernel_url(log_path: &PathBuf) -> Option<(String, u16)> {
+    let text = fs::read_to_string(log_path).ok()?;
+    let mut result = None;
+    for line in text.lines() {
+        if let Some(pos) = line.find("dsh web: ") {
+            let url = line[pos + "dsh web: ".len()..].trim().to_string();
+            if url.starts_with("http://") {
+                if let Some(port) = url
+                    .split("//")
+                    .nth(1)
+                    .and_then(|rest| rest.split(&['/', '?'][..]).next())
+                    .and_then(|authority| authority.rsplit(':').next())
+                    .and_then(|p| p.parse::<u16>().ok())
+                {
+                    result = Some((url, port));
+                }
+            }
+        }
+    }
+    result
+}
+
+fn write_kernel_json(pid: u32, url: &str, port: u16) {
+    let value = serde_json::json!({
+        "pid": pid,
+        "url": url,
+        "port": port,
+        "dsh_home": ams_home().join("kernel").join("dsh").display().to_string(),
+        "log": kernel_log_path().display().to_string()
+    });
+    let _ = fs::create_dir_all(runtime_dir());
+    let _ = fs::write(kernel_json_path(), serde_json::to_string_pretty(&value).unwrap_or_default());
+}
+
+#[tauri::command]
+fn kernel_status() -> KernelInfo {
+    let dsh_home = ams_home().join("kernel").join("dsh").display().to_string();
+    let mut info = KernelInfo {
+        installed: dev_root().join("ams-harness").join("package.json").is_file(),
+        running: false,
+        starting: false,
+        url: String::new(),
+        port: 0,
+        pid: 0,
+        dsh_home,
+        log: kernel_log_path().display().to_string(),
+        message: String::new(),
+    };
+    let log_path = kernel_log_path();
+    if let Some((url, port)) = read_kernel_url(&log_path) {
+        info.url = url;
+        info.port = port;
+    }
+    let json_path = kernel_json_path();
+    if let Ok(text) = fs::read_to_string(&json_path) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            info.pid = value.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            if info.url.is_empty() {
+                info.url = value.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            }
+            if info.port == 0 {
+                info.port = value.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+            }
+        }
+    }
+    if info.pid > 0 && process_alive(info.pid) {
+        info.running = !info.url.is_empty();
+        info.starting = info.url.is_empty();
+        if info.starting {
+            info.message = "内核启动中（等待 token URL）".to_string();
+        } else {
+            info.message = "运行中".to_string();
+            write_kernel_json(info.pid, &info.url, info.port);
+        }
+    } else if info.pid > 0 {
+        info.message = "进程已退出（可重新启动）".to_string();
+    } else if !info.installed {
+        info.message = "内核未安装（缺少 ams-harness）".to_string();
+    } else {
+        info.message = "未运行".to_string();
+    }
+    info
+}
+
+#[tauri::command]
+fn start_kernel() -> Result<String, String> {
+    let harness = dev_root().join("ams-harness");
+    if !harness.join("package.json").is_file() {
+        return Err(format!("找不到内核源码：{}", harness.display()));
+    }
+    let current = kernel_status();
+    if current.pid > 0 && process_alive(current.pid) {
+        return Ok(format!("内核已在运行（pid={}）", current.pid));
+    }
+    let dsh_home = ams_home().join("kernel").join("dsh");
+    fs::create_dir_all(&dsh_home).map_err(|e| format!("创建 DSH_HOME 失败: {e}"))?;
+    fs::create_dir_all(runtime_dir()).map_err(|e| format!("创建 runtime 失败: {e}"))?;
+    let log = fs::File::create(kernel_log_path()).map_err(|e| format!("创建日志失败: {e}"))?;
+    let log_err = log.try_clone().map_err(|e| format!("复制日志句柄失败: {e}"))?;
+    let mut command = if let Some(corepack) = find_in_path("corepack.cmd") {
+        let mut c = Command::new(corepack);
+        c.args(["pnpm", "dsh", "web", "--no-open", "--port", "0"]);
+        c
+    } else {
+        let mut c = Command::new("cmd.exe");
+        c.args(["/C", "corepack pnpm dsh web --no-open --port 0"]);
+        c
+    };
+    command
+        .current_dir(&harness)
+        .env("DSH_HOME", &dsh_home)
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(log_err));
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let child = command.spawn().map_err(|e| format!("启动内核失败: {e}"))?;
+    write_kernel_json(child.id(), "", 0);
+    Ok(format!("内核启动中，pid={}；日志：{}", child.id(), kernel_log_path().display()))
+}
+
+#[tauri::command]
+fn stop_kernel() -> Result<String, String> {
+    let info = kernel_status();
+    if info.pid == 0 || !process_alive(info.pid) {
+        let _ = fs::remove_file(kernel_json_path());
+        return Ok("内核未运行".to_string());
+    }
+    let output = Command::new("taskkill.exe")
+        .args(["/PID", &info.pid.to_string(), "/T", "/F"])
+        .output();
+    let _ = fs::remove_file(kernel_json_path());
+    match output {
+        Ok(out) => Ok(format!("已停止内核（pid={}）：{}", info.pid, String::from_utf8_lossy(&out.stdout).trim())),
+        Err(e) => Err(format!("停止失败: {e}")),
+    }
+}
+
 #[tauri::command]
 fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -409,6 +599,9 @@ pub fn run() {
             component_status,
             scan_voices,
             install_default_voice,
+            kernel_status,
+            start_kernel,
+            stop_kernel,
             app_version
         ])
         .run(tauri::generate_context!())
