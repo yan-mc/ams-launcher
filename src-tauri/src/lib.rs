@@ -3,6 +3,8 @@ use base64::Engine;
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Serialize;
+use std::fs::File;
+use std::io::copy;
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
@@ -412,29 +414,65 @@ fn scan_voices() -> Result<Vec<VoiceInfo>, String> {
     Ok(result)
 }
 
-#[tauri::command]
-fn install_default_voice() -> Result<String, String> {
-    let source = env::var("AMS_DEFAULT_VOICE_DIR").unwrap_or_else(|_| "F:\\ai歌曲\\0 曼波".to_string());
-    let source_dir = PathBuf::from(&source);
-    let pth = source_dir.join("manbo.pth");
-    let index = source_dir.join("manbo.index");
-    if !pth.is_file() {
-        return Err(format!("默认音源文件不存在：{}（可用 AMS_DEFAULT_VOICE_DIR 覆盖）", pth.display()));
+
+fn install_voicepack_zip(pack: &PathBuf, target_dir: &PathBuf) -> Result<String, String> {
+    let file = File::open(pack).map_err(|e| format!("打开 voicepack 失败: {e}"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 voicepack 失败: {e}"))?;
+    fs::create_dir_all(target_dir).map_err(|e| format!("创建音源目录失败: {e}"))?;
+    let mut installed: Vec<String> = Vec::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|e| format!("读取 zip 条目失败: {e}"))?;
+        let Some(name) = entry.enclosed_name().and_then(|p| p.file_name().map(|n| n.to_os_string())) else { continue };
+        let name_text = name.to_string_lossy().to_string();
+        if !(name_text.ends_with(".pth") || name_text.ends_with(".index") || name_text == "voice.json") {
+            continue;
+        }
+        let dest = target_dir.join(&name);
+        let mut out = File::create(&dest).map_err(|e| format!("写出 {} 失败: {e}", dest.display()))?;
+        copy(&mut entry, &mut out).map_err(|e| format!("解包 {} 失败: {e}", dest.display()))?;
+        installed.push(name_text);
     }
-    let target_dir = ams_home().join("voices").join("曼波");
+    if !installed.iter().any(|n| n.ends_with(".pth")) {
+        return Err("voicepack 中没有 .pth".to_string());
+    }
+    Ok(format!("已从 voicepack 安装默认音源：{}", installed.join(", ")))
+}
+
+fn install_voicepack_dir(source_dir: &PathBuf, target_dir: &PathBuf) -> Result<String, String> {
+    let pth = source_dir.join("manbo.pth");
+    if !pth.is_file() {
+        return Err(format!("默认音源文件不存在：{}（可用 AMS_DEFAULT_VOICE_PACK 指定 voicepack.zip）", pth.display()));
+    }
+    fs::create_dir_all(target_dir).map_err(|e| format!("创建音源目录失败: {e}"))?;
     let target_pth = target_dir.join("曼波.pth");
     if target_pth.is_file() {
         return Ok(format!("默认音源已存在：{}", target_pth.display()));
     }
-    fs::create_dir_all(&target_dir).map_err(|e| format!("创建音源目录失败: {e}"))?;
     fs::copy(&pth, &target_pth).map_err(|e| format!("复制 pth 失败: {e}"))?;
     let mut message = format!("已安装默认音源曼波（pth {:.1} MB）", fs::metadata(&target_pth).map(|m| m.len()).unwrap_or(0) as f64 / (1024.0 * 1024.0));
+    let index = source_dir.join("manbo.index");
     if index.is_file() {
         let target_index = target_dir.join("曼波.index");
         fs::copy(&index, &target_index).map_err(|e| format!("复制 index 失败: {e}"))?;
         message.push_str(&format!("，index {:.1} MB", fs::metadata(&target_index).map(|m| m.len()).unwrap_or(0) as f64 / (1024.0 * 1024.0)));
     }
     Ok(message + "；可在 Gateway 启动后扫描")
+}
+
+#[tauri::command]
+fn install_default_voice() -> Result<String, String> {
+    let target_dir = ams_home().join("voices").join("曼波");
+    if target_dir.join("曼波.pth").is_file() {
+        return Ok(format!("默认音源已存在：{}", target_dir.join("曼波.pth").display()));
+    }
+    if let Ok(pack) = env::var("AMS_DEFAULT_VOICE_PACK") {
+        let pack_path = PathBuf::from(pack);
+        if pack_path.is_file() {
+            return install_voicepack_zip(&pack_path, &target_dir);
+        }
+    }
+    let source = env::var("AMS_DEFAULT_VOICE_DIR").unwrap_or_else(|_| "F:\\ai歌曲\\0 曼波".to_string());
+    install_voicepack_dir(&PathBuf::from(source), &target_dir)
 }
 
 
@@ -807,6 +845,19 @@ mod tests {
         assert!(!result.valid);
     }
 
+
+    #[test]
+    fn installs_voicepack_zip() {
+        let pack = PathBuf::from("F:\\Deepseek_harness\\AI音乐处理\\09_发布\\staging\\assets\\voicepack-manbo.zip");
+        if !pack.is_file() {
+            return;
+        }
+        let target = std::env::temp_dir().join("ams-voicepack-test");
+        let _ = fs::remove_dir_all(&target);
+        let message = install_voicepack_zip(&pack, &target).unwrap();
+        assert!(target.join("曼波.pth").is_file(), "{message}");
+        let _ = fs::remove_dir_all(&target);
+    }
     #[test]
     fn canonical_bytes_match_python_format() {
         let value = serde_json::json!({"b": 1, "a": "中文", "signature": "x"});
