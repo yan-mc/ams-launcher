@@ -26,3 +26,4 @@ corepack pnpm tauri build   # 生成 NSIS/MSI（未签名）
 - Gateway 控制：状态/健康检查、端口/版本/任务数、启动（独立进程）/停止、5s 自动刷新。
 - 组件状态：内核、插件、Gateway、音源库（读取 AMS_HOME/voices）。
 - 开发默认路径可用 `AMS_DEV_ROOT` 覆盖，数据目录可用 `AMS_HOME` 覆盖。
+- v0.1.3：音源库卡片（扫描/状态/大小/index），安装默认曼波（从 `AMS_DEFAULT_VOICE_DIR` 复制到 `AMS_HOME/voices/曼波/`）；启动 Gateway 时自动注入 `AMS_RVC_PYTHON`（可用环境变量覆盖）。

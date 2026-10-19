@@ -33,6 +33,17 @@ struct GatewayInfo {
 }
 
 #[derive(Serialize, Clone)]
+struct VoiceInfo {
+    name: String,
+    status: String,
+    info: String,
+    sr: String,
+    size_mb: u64,
+    has_index: bool,
+    message: String,
+}
+
+#[derive(Serialize, Clone)]
 struct ComponentItem {
     name: String,
     state: String,
@@ -245,6 +256,16 @@ fn start_gateway() -> Result<String, String> {
         .arg(&home)
         .args(["--port", "0", "--log-level", "INFO"])
         .env("AMS_HOME", &home);
+    if let Ok(value) = env::var("AMS_RVC_PYTHON") {
+        if !value.trim().is_empty() {
+            command.env("AMS_RVC_PYTHON", value);
+        }
+    } else {
+        let default_rvc = PathBuf::from("F:\\ai歌曲\\RVC20260311\\runtime\\python.exe");
+        if default_rvc.is_file() {
+            command.env("AMS_RVC_PYTHON", default_rvc);
+        }
+    }
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     let child = command.spawn().map_err(|e| format!("启动 Gateway 失败: {e}"))?;
@@ -316,6 +337,61 @@ fn component_status() -> Vec<ComponentItem> {
     items
 }
 
+
+fn gateway_get(path: &str) -> Result<String, String> {
+    let (port, _pid) = read_ports().ok_or_else(|| "Gateway 未运行（缺少 ports.json）".to_string())?;
+    let token = gateway_token().ok_or_else(|| "Gateway token 缺失".to_string())?;
+    http_get(port, path, &token)
+}
+
+#[tauri::command]
+fn scan_voices() -> Result<Vec<VoiceInfo>, String> {
+    let body = gateway_get("/api/v1/voices")?;
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("解析 voices JSON 失败: {e}"))?;
+    let data = value.get("data").ok_or_else(|| "voices 响应缺少 data".to_string())?;
+    let list = data.get("voices").and_then(|v| v.as_array()).ok_or_else(|| "voices 响应缺少 voices 数组".to_string())?;
+    let mut result = Vec::new();
+    for item in list {
+        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+        let meta = item.get("meta");
+        let info = meta.and_then(|m| m.get("info")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let sr = meta.and_then(|m| m.get("sr")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let size_mb = item.get("pth").and_then(|p| p.get("size_bytes")).and_then(|v| v.as_u64()).unwrap_or(0) / (1024 * 1024);
+        let has_index = item.get("index").map(|v| !v.is_null()).unwrap_or(false);
+        let message = item.get("issues").and_then(|v| v.as_array()).map(|issues| {
+            issues.iter().filter_map(|x| x.get("message").and_then(|m| m.as_str())).collect::<Vec<_>>().join("; ")
+        }).unwrap_or_default();
+        result.push(VoiceInfo { name, status, info, sr, size_mb, has_index, message });
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn install_default_voice() -> Result<String, String> {
+    let source = env::var("AMS_DEFAULT_VOICE_DIR").unwrap_or_else(|_| "F:\\ai歌曲\\0 曼波".to_string());
+    let source_dir = PathBuf::from(&source);
+    let pth = source_dir.join("manbo.pth");
+    let index = source_dir.join("manbo.index");
+    if !pth.is_file() {
+        return Err(format!("默认音源文件不存在：{}（可用 AMS_DEFAULT_VOICE_DIR 覆盖）", pth.display()));
+    }
+    let target_dir = ams_home().join("voices").join("曼波");
+    let target_pth = target_dir.join("曼波.pth");
+    if target_pth.is_file() {
+        return Ok(format!("默认音源已存在：{}", target_pth.display()));
+    }
+    fs::create_dir_all(&target_dir).map_err(|e| format!("创建音源目录失败: {e}"))?;
+    fs::copy(&pth, &target_pth).map_err(|e| format!("复制 pth 失败: {e}"))?;
+    let mut message = format!("已安装默认音源曼波（pth {:.1} MB）", fs::metadata(&target_pth).map(|m| m.len()).unwrap_or(0) as f64 / (1024.0 * 1024.0));
+    if index.is_file() {
+        let target_index = target_dir.join("曼波.index");
+        fs::copy(&index, &target_index).map_err(|e| format!("复制 index 失败: {e}"))?;
+        message.push_str(&format!("，index {:.1} MB", fs::metadata(&target_index).map(|m| m.len()).unwrap_or(0) as f64 / (1024.0 * 1024.0)));
+    }
+    Ok(message + "；可在 Gateway 启动后扫描")
+}
+
 #[tauri::command]
 fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -331,6 +407,8 @@ pub fn run() {
             start_gateway,
             stop_gateway,
             component_status,
+            scan_voices,
+            install_default_voice,
             app_version
         ])
         .run(tauri::generate_context!())

@@ -15,6 +15,7 @@ type GatewayInfo = {
   message: string;
 };
 type ComponentItem = { name: string; state: string; detail: string; ok: boolean };
+type VoiceInfo = { name: string; status: string; info: string; sr: string; size_mb: number; has_index: boolean; message: string };
 
 const version = ref("0.1.2");
 const loading = ref(false);
@@ -23,6 +24,9 @@ const error = ref("");
 const checks = ref<EnvItem[]>([{ label: "环境检测", value: "正在读取…", ok: false }]);
 const gateway = ref<GatewayInfo | null>(null);
 const components = ref<ComponentItem[]>([]);
+const voices = ref<VoiceInfo[]>([]);
+const voiceMsg = ref("");
+const voiceBusy = ref(false);
 let timer: number | undefined;
 
 async function refreshEnv() {
@@ -43,8 +47,31 @@ async function refreshGateway() {
   try {
     gateway.value = await invoke<GatewayInfo>("gateway_status");
     components.value = await invoke<ComponentItem[]>("component_status");
+    if (gateway.value?.healthy) await scanVoices();
   } catch (e) {
     error.value = String(e);
+  }
+}
+
+async function scanVoices() {
+  try {
+    voices.value = await invoke<VoiceInfo[]>("scan_voices");
+    voiceMsg.value = voices.value.length ? "" : "音源库为空";
+  } catch (e) {
+    voiceMsg.value = "扫描失败：" + String(e);
+  }
+}
+
+async function installDefaultVoice() {
+  voiceBusy.value = true;
+  voiceMsg.value = "正在安装默认音源曼波（约 197MB）…";
+  try {
+    voiceMsg.value = await invoke<string>("install_default_voice");
+    await scanVoices();
+  } catch (e) {
+    voiceMsg.value = "安装失败：" + String(e);
+  } finally {
+    voiceBusy.value = false;
   }
 }
 
@@ -123,6 +150,23 @@ onUnmounted(() => {
           <button :disabled="!gateway?.running" @click="stopGateway">停止</button>
           <button @click="refreshGateway">刷新</button>
         </div>
+      </div>
+
+      <div class="card wide">
+        <h2>音源库</h2>
+        <p v-if="voiceMsg" class="note">{{ voiceMsg }}</p>
+        <ul v-if="voices.length">
+          <li v-for="v in voices" :key="v.name">
+            <span>{{ v.name }}</span>
+            <b :class="v.status === 'ok' ? 'ok' : 'warn'">{{ v.status }} · {{ v.info }} · {{ v.sr }}</b>
+            <small>{{ v.size_mb }} MB · index={{ v.has_index ? "有" : "无" }} {{ v.message }}</small>
+          </li>
+        </ul>
+        <div class="row">
+          <button :disabled="voiceBusy" @click="scanVoices">扫描音源</button>
+          <button :disabled="voiceBusy" @click="installDefaultVoice">安装默认曼波</button>
+        </div>
+        <p class="note">默认音源从 AMS_DEFAULT_VOICE_DIR（默认 F:\ai歌曲\0 曼波）复制到 AMS_HOME/voices/曼波/，不进 Git/安装包。</p>
       </div>
 
       <div class="card wide">
