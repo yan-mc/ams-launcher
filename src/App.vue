@@ -146,9 +146,10 @@ async function stopGateway() {
 async function submitMsvc() {
   msvcMsg.value = "";
   try {
+    const outDir = msvc.value.out || (gateway.value ? gateway.value.home + "\\artifacts" : "");
     const id = await invoke<string>("submit_job", {
       jobType: "convert.msvc",
-      params: { input_path: msvc.value.input, reference_pth: msvc.value.reference, out_dir: msvc.value.out, name: msvc.value.name },
+      params: { input_path: msvc.value.input, reference_pth: msvc.value.reference, out_dir: outDir, name: msvc.value.name },
     });
     msvcJob.value = { id, job_type: "convert.msvc", status: "queued", progress: 0, stage: "", error: "" };
     msvcMsg.value = "已提交任务 " + id;
