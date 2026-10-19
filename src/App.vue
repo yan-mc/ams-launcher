@@ -18,6 +18,9 @@ type GatewayInfo = {
 type ComponentItem = { name: string; state: string; detail: string; ok: boolean };
 type VoiceInfo = { name: string; status: string; info: string; sr: string; size_mb: number; has_index: boolean; message: string };
 type KernelInfo = { installed: boolean; running: boolean; starting: boolean; url: string; port: number; pid: number; dsh_home: string; log: string; message: string };
+type JobInfo = { id: string; job_type: string; status: string; progress: number; stage: string; error: string };
+type UpdateComponent = { id: string; kind: string; version: string; size: number };
+type UpdateManifest = { schema: string; channel: string; sequence: number; signature_present: boolean; components: UpdateComponent[]; path: string };
 
 const version = ref("0.1.2");
 const loading = ref(false);
@@ -31,6 +34,12 @@ const voiceMsg = ref("");
 const voiceBusy = ref(false);
 const kernel = ref<KernelInfo | null>(null);
 const kernelMsg = ref("");
+const msvc = ref({ input: "", reference: "", out: "", name: "" });
+const msvcJob = ref<JobInfo | null>(null);
+const msvcMsg = ref("");
+const updatePath = ref("F:\\Deepseek_harness\\AI音乐处理\\08_项目代码\\ams-release\\examples\\manifest.signed.json");
+const updateInfo = ref<UpdateManifest | null>(null);
+const updateMsg = ref("");
 let timer: number | undefined;
 
 async function refreshEnv() {
@@ -134,6 +143,40 @@ async function stopGateway() {
   }
 }
 
+async function submitMsvc() {
+  msvcMsg.value = "";
+  try {
+    const id = await invoke<string>("submit_job", {
+      jobType: "convert.msvc",
+      params: { input_path: msvc.value.input, reference_pth: msvc.value.reference, out_dir: msvc.value.out, name: msvc.value.name },
+    });
+    msvcJob.value = { id, job_type: "convert.msvc", status: "queued", progress: 0, stage: "", error: "" };
+    msvcMsg.value = "已提交任务 " + id;
+    setTimeout(refreshMsvcJob, 1500);
+  } catch (e) {
+    msvcMsg.value = "提交失败：" + String(e);
+  }
+}
+
+async function refreshMsvcJob() {
+  if (!msvcJob.value?.id) return;
+  try {
+    msvcJob.value = await invoke<JobInfo>("job_status", { jobId: msvcJob.value.id });
+  } catch (e) {
+    msvcMsg.value = "查询失败：" + String(e);
+  }
+}
+
+async function loadUpdate() {
+  updateMsg.value = "";
+  try {
+    updateInfo.value = await invoke<UpdateManifest>("read_update_manifest", { path: updatePath.value });
+    updateMsg.value = "已读取 " + updateInfo.value.components.length + " 个组件";
+  } catch (e) {
+    updateInfo.value = null;
+    updateMsg.value = "读取失败：" + String(e);
+  }
+}
 async function refreshAll() {
   await Promise.all([refreshEnv(), refreshGateway(), refreshKernel()]);
 }
@@ -205,6 +248,39 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <div class="card">
+        <h2>MSVC → pth 转换器</h2>
+        <ul>
+          <li><span>输入 .msvc</span><input v-model="msvc.input" placeholder="F:\\...\\xxx.msvc" /></li>
+          <li><span>参考 pth</span><input v-model="msvc.reference" placeholder="F:\\ai歌曲\\0 曼波\\manbo.pth" /></li>
+          <li><span>输出目录</span><input v-model="msvc.out" placeholder="留空=AMS_HOME/artifacts" /></li>
+          <li><span>音源名</span><input v-model="msvc.name" placeholder="可选" /></li>
+        </ul>
+        <div class="row">
+          <button :disabled="!gateway?.healthy" @click="submitMsvc">提交转换</button>
+          <button :disabled="!msvcJob" @click="refreshMsvcJob">刷新任务</button>
+        </div>
+        <p v-if="msvcMsg" class="note">{{ msvcMsg }}</p>
+        <div v-if="msvcJob" class="job">
+          <b>{{ msvcJob.status }}</b> · {{ msvcJob.progress.toFixed(0) }}% · {{ msvcJob.stage }}
+          <span v-if="msvcJob.error" class="err">{{ msvcJob.error }}</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>更新中心</h2>
+        <input v-model="updatePath" class="wide-input" />
+        <div class="row">
+          <button @click="loadUpdate">读取清单</button>
+        </div>
+        <p v-if="updateMsg" class="note">{{ updateMsg }}</p>
+        <ul v-if="updateInfo">
+          <li><span>schema / channel</span><b>{{ updateInfo.schema }} / {{ updateInfo.channel }}</b></li>
+          <li><span>sequence</span><b>{{ updateInfo.sequence }}</b></li>
+          <li><span>signature</span><b :class="updateInfo.signature_present ? 'ok' : 'bad'">{{ updateInfo.signature_present ? "存在" : "缺失" }}</b></li>
+          <li v-for="c in updateInfo.components" :key="c.id"><span>{{ c.kind }}</span><b>{{ c.id }} · {{ c.version }} · {{ c.size }} B</b></li>
+        </ul>
+      </div>
       <div class="card wide">
         <h2>音源库</h2>
         <p v-if="voiceMsg" class="note">{{ voiceMsg }}</p>
@@ -259,6 +335,10 @@ li small { flex-basis: 100%; color: #7f8994; word-break: break-all; }
 .ok { color: #6fd08c; } .warn { color: #e0b25a; } .bad { color: #d97a7a; }
 .err { color: #e07777; font-size: 12px; }
 .note { color: #8a949e; font-size: 12px; margin-top: 10px; }
+input { background: #14161a; color: #dfe6ee; border: 1px solid #2a2f38; border-radius: 4px; padding: 4px 6px; font-size: 12px; width: 60%; }
+.wide-input { width: 100%; margin-bottom: 6px; }
+.job { margin-top: 8px; font-size: 13px; color: #c4ccd5; }
+.job .err { display: block; color: #e07777; font-size: 12px; margin-top: 4px; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; }
 button { margin-top: 12px; background: #263244; color: #9fb6d4; border: 1px solid #33445c; border-radius: 6px; padding: 7px 12px; }
 button:disabled { opacity: .45; }

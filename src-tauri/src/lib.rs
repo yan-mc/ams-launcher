@@ -57,6 +57,34 @@ struct KernelInfo {
 }
 
 #[derive(Serialize, Clone)]
+struct JobInfo {
+    id: String,
+    job_type: String,
+    status: String,
+    progress: f64,
+    stage: String,
+    error: String,
+}
+
+#[derive(Serialize, Clone)]
+struct UpdateComponent {
+    id: String,
+    kind: String,
+    version: String,
+    size: u64,
+}
+
+#[derive(Serialize, Clone)]
+struct UpdateManifest {
+    schema: String,
+    channel: String,
+    sequence: u64,
+    signature_present: bool,
+    components: Vec<UpdateComponent>,
+    path: String,
+}
+
+#[derive(Serialize, Clone)]
 struct ComponentItem {
     name: String,
     state: String,
@@ -582,6 +610,81 @@ fn stop_kernel() -> Result<String, String> {
     }
 }
 
+
+fn http_post(port: u16, path: &str, token: &str, body: &str) -> Result<String, String> {
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().map_err(|e| format!("地址解析失败: {e}"))?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))
+        .map_err(|e| format!("连接失败: {e}"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.as_bytes().len()
+    );
+    stream.write_all(request.as_bytes()).map_err(|e| format!("发送失败: {e}"))?;
+    let mut buffer = String::new();
+    stream.read_to_string(&mut buffer).map_err(|e| format!("读取失败: {e}"))?;
+    let status_line = buffer.lines().next().unwrap_or("");
+    let body_text = buffer.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+    if !(status_line.contains(" 200 ") || status_line.contains(" 201 ")) {
+        return Err(format!("HTTP 失败: {status_line} {body_text}"));
+    }
+    Ok(body_text)
+}
+
+#[tauri::command]
+fn submit_job(job_type: String, params: serde_json::Value) -> Result<String, String> {
+    let (port, _pid) = read_ports().ok_or_else(|| "Gateway 未运行（缺少 ports.json）".to_string())?;
+    let token = gateway_token().ok_or_else(|| "Gateway token 缺失".to_string())?;
+    let payload = serde_json::json!({ "type": job_type, "params": params }).to_string();
+    let body = http_post(port, "/api/v1/jobs", &token, &payload)?;
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("解析任务响应失败: {e}"))?;
+    let id = value.get("id").and_then(|v| v.as_str()).ok_or_else(|| format!("任务响应缺少 id: {body}"))?;
+    Ok(id.to_string())
+}
+
+#[tauri::command]
+fn job_status(job_id: String) -> Result<JobInfo, String> {
+    let (port, _pid) = read_ports().ok_or_else(|| "Gateway 未运行".to_string())?;
+    let token = gateway_token().ok_or_else(|| "Gateway token 缺失".to_string())?;
+    let body = http_get(port, &format!("/api/v1/jobs/{job_id}"), &token)?;
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("解析任务失败: {e}"))?;
+    let error = value.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()).unwrap_or("").to_string();
+    Ok(JobInfo {
+        id: value.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        job_type: value.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        status: value.get("status").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+        progress: value.get("progress").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        stage: value.get("stage").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        error,
+    })
+}
+
+#[tauri::command]
+fn read_update_manifest(path: String) -> Result<UpdateManifest, String> {
+    let text = fs::read_to_string(&path).map_err(|e| format!("读取清单失败: {e}"))?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("清单不是合法 JSON: {e}"))?;
+    let components = value
+        .get("components")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items.iter().map(|item| UpdateComponent {
+                id: item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                kind: item.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                version: item.get("version").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                size: item.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+            }).collect()
+        })
+        .unwrap_or_default();
+    Ok(UpdateManifest {
+        schema: value.get("schema").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        channel: value.get("channel").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        sequence: value.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0),
+        signature_present: value.get("signature").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false),
+        components,
+        path,
+    })
+}
+
 #[tauri::command]
 fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -602,6 +705,9 @@ pub fn run() {
             kernel_status,
             start_kernel,
             stop_kernel,
+            submit_job,
+            job_status,
+            read_update_manifest,
             app_version
         ])
         .run(tauri::generate_context!())
