@@ -21,6 +21,7 @@ type KernelInfo = { installed: boolean; running: boolean; starting: boolean; url
 type JobInfo = { id: string; job_type: string; status: string; progress: number; stage: string; error: string };
 type UpdateComponent = { id: string; kind: string; version: string; size: number };
 type UpdateManifest = { schema: string; channel: string; sequence: number; signature_present: boolean; components: UpdateComponent[]; path: string };
+type UpdateVerify = { valid: boolean; message: string; sequence: number; components: number };
 
 const version = ref("0.1.2");
 const loading = ref(false);
@@ -40,6 +41,7 @@ const msvcMsg = ref("");
 const updatePath = ref("F:\\Deepseek_harness\\AI音乐处理\\08_项目代码\\ams-release\\examples\\manifest.signed.json");
 const updateInfo = ref<UpdateManifest | null>(null);
 const updateMsg = ref("");
+const updateVerify = ref<UpdateVerify | null>(null);
 let timer: number | undefined;
 
 async function refreshEnv() {
@@ -168,8 +170,20 @@ async function refreshMsvcJob() {
   }
 }
 
+async function verifyUpdate() {
+  updateMsg.value = "";
+  try {
+    updateVerify.value = await invoke<UpdateVerify>("verify_update_manifest", { path: updatePath.value });
+    updateMsg.value = updateVerify.value.message;
+  } catch (e) {
+    updateVerify.value = null;
+    updateMsg.value = "验签失败：" + String(e);
+  }
+}
+
 async function loadUpdate() {
   updateMsg.value = "";
+  updateVerify.value = null;
   try {
     updateInfo.value = await invoke<UpdateManifest>("read_update_manifest", { path: updatePath.value });
     updateMsg.value = "已读取 " + updateInfo.value.components.length + " 个组件";
@@ -273,12 +287,14 @@ onUnmounted(() => {
         <input v-model="updatePath" class="wide-input" />
         <div class="row">
           <button @click="loadUpdate">读取清单</button>
+          <button @click="verifyUpdate">验证签名</button>
         </div>
         <p v-if="updateMsg" class="note">{{ updateMsg }}</p>
         <ul v-if="updateInfo">
           <li><span>schema / channel</span><b>{{ updateInfo.schema }} / {{ updateInfo.channel }}</b></li>
           <li><span>sequence</span><b>{{ updateInfo.sequence }}</b></li>
           <li><span>signature</span><b :class="updateInfo.signature_present ? 'ok' : 'bad'">{{ updateInfo.signature_present ? "存在" : "缺失" }}</b></li>
+          <li v-if="updateVerify"><span>验签</span><b :class="updateVerify.valid ? 'ok' : 'bad'">{{ updateVerify.message }}</b></li>
           <li v-for="c in updateInfo.components" :key="c.id"><span>{{ c.kind }}</span><b>{{ c.id }} · {{ c.version }} · {{ c.size }} B</b></li>
         </ul>
       </div>

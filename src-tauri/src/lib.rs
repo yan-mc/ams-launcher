@@ -1,3 +1,7 @@
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
+use ed25519_dalek::pkcs8::DecodePublicKey;
+use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Serialize;
 use std::env;
 use std::fs;
@@ -685,6 +689,58 @@ fn read_update_manifest(path: String) -> Result<UpdateManifest, String> {
     })
 }
 
+
+#[derive(Serialize, Clone)]
+struct UpdateVerify {
+    valid: bool,
+    message: String,
+    sequence: u64,
+    components: u32,
+}
+
+fn canonical_manifest_bytes(value: &serde_json::Value) -> Result<Vec<u8>, String> {
+    let mut object = value.as_object().ok_or_else(|| "清单根必须是对象".to_string())?.clone();
+    object.remove("signature");
+    serde_json::to_string(&serde_json::Value::Object(object))
+        .map(|text| text.into_bytes())
+        .map_err(|e| format!("规范化清单失败: {e}"))
+}
+
+#[tauri::command]
+fn verify_update_manifest(path: String, public_key: Option<String>) -> Result<UpdateVerify, String> {
+    let text = fs::read_to_string(&path).map_err(|e| format!("读取清单失败: {e}"))?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("清单不是合法 JSON: {e}"))?;
+    let signature_text = value
+        .get("signature")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "清单缺少 signature".to_string())?;
+    let signature_text = signature_text
+        .strip_prefix("ed25519:")
+        .ok_or_else(|| "signature 格式不是 ed25519:<base64>".to_string())?;
+    let signature_bytes = BASE64.decode(signature_text).map_err(|e| format!("signature base64 非法: {e}"))?;
+    let signature = Signature::from_slice(&signature_bytes).map_err(|e| format!("签名长度非法: {e}"))?;
+    let key_path = public_key.unwrap_or_else(|| {
+        dev_root().join("ams-release").join("examples").join("keys").join("public.pem").display().to_string()
+    });
+    let key_text = fs::read_to_string(&key_path).map_err(|e| format!("读取公钥失败（{key_path}）: {e}"))?;
+    let key = VerifyingKey::from_public_key_pem(&key_text).map_err(|e| format!("解析公钥失败: {e}"))?;
+    let payload = canonical_manifest_bytes(&value)?;
+    match key.verify_strict(&payload, &signature) {
+        Ok(()) => Ok(UpdateVerify {
+            valid: true,
+            message: "签名有效".to_string(),
+            sequence: value.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0),
+            components: value.get("components").and_then(|v| v.as_array()).map(|a| a.len() as u32).unwrap_or(0),
+        }),
+        Err(_) => Ok(UpdateVerify {
+            valid: false,
+            message: "签名无效（清单被篡改或公钥不匹配）".to_string(),
+            sequence: value.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0),
+            components: value.get("components").and_then(|v| v.as_array()).map(|a| a.len() as u32).unwrap_or(0),
+        }),
+    }
+}
+
 #[tauri::command]
 fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -708,8 +764,54 @@ pub fn run() {
             submit_job,
             job_status,
             read_update_manifest,
+            verify_update_manifest,
             app_version
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn example_paths() -> (PathBuf, PathBuf) {
+        let root = PathBuf::from("F:\\Deepseek_harness\\AI音乐处理\\08_项目代码\\ams-release\\examples");
+        (root.join("manifest.signed.json"), root.join("keys").join("public.pem"))
+    }
+
+    #[test]
+    fn verifies_signed_example() {
+        let (manifest, key) = example_paths();
+        if !manifest.is_file() || !key.is_file() {
+            return;
+        }
+        let result = verify_update_manifest(manifest.display().to_string(), Some(key.display().to_string())).unwrap();
+        assert!(result.valid, "{}", result.message);
+        assert_eq!(result.components, 7);
+        assert!(result.sequence > 0);
+    }
+
+    #[test]
+    fn rejects_tampered_manifest() {
+        let (manifest, key) = example_paths();
+        if !manifest.is_file() || !key.is_file() {
+            return;
+        }
+        let text = fs::read_to_string(&manifest).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        value["sequence"] = serde_json::json!(999999);
+        let tampered = std::env::temp_dir().join("ams-tampered-manifest.json");
+        fs::write(&tampered, serde_json::to_string(&value).unwrap()).unwrap();
+        let result = verify_update_manifest(tampered.display().to_string(), Some(key.display().to_string())).unwrap();
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn canonical_bytes_match_python_format() {
+        let value = serde_json::json!({"b": 1, "a": "中文", "signature": "x"});
+        let bytes = canonical_manifest_bytes(&value).unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        assert_eq!(text, "{\"a\":\"中文\",\"b\":1}");
+    }
 }
