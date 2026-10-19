@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { open } from "@tauri-apps/plugin-dialog";
 
 type EnvItem = { label: string; value: string; ok: boolean };
 type GatewayInfo = {
@@ -181,6 +182,25 @@ async function verifyUpdate() {
   }
 }
 
+async function pickMsvcInput() {
+  const p = await open({ multiple: false, filters: [{ name: "MSVC", extensions: ["msvc"] }] });
+  if (typeof p === "string") msvc.value.input = p;
+}
+
+async function pickReference() {
+  const p = await open({ multiple: false, filters: [{ name: "RVC pth", extensions: ["pth"] }] });
+  if (typeof p === "string") msvc.value.reference = p;
+}
+
+async function pickOutDir() {
+  const p = await open({ directory: true, multiple: false });
+  if (typeof p === "string") msvc.value.out = p;
+}
+
+async function pickUpdateFile() {
+  const p = await open({ multiple: false, filters: [{ name: "Update manifest", extensions: ["json"] }] });
+  if (typeof p === "string") updatePath.value = p;
+}
 async function loadUpdate() {
   updateMsg.value = "";
   updateVerify.value = null;
@@ -266,9 +286,9 @@ onUnmounted(() => {
       <div class="card">
         <h2>MSVC → pth 转换器</h2>
         <ul>
-          <li><span>输入 .msvc</span><input v-model="msvc.input" placeholder="F:\\...\\xxx.msvc" /></li>
-          <li><span>参考 pth</span><input v-model="msvc.reference" placeholder="F:\\ai歌曲\\0 曼波\\manbo.pth" /></li>
-          <li><span>输出目录</span><input v-model="msvc.out" placeholder="留空=AMS_HOME/artifacts" /></li>
+          <li><span>输入 .msvc</span><input v-model="msvc.input" placeholder="F:\\...\\xxx.msvc" /><button class="mini" @click="pickMsvcInput">选择</button></li>
+          <li><span>参考 pth</span><input v-model="msvc.reference" placeholder="F:\\ai歌曲\\0 曼波\\manbo.pth" /><button class="mini" @click="pickReference">选择</button></li>
+          <li><span>输出目录</span><input v-model="msvc.out" placeholder="留空=AMS_HOME/artifacts" /><button class="mini" @click="pickOutDir">选择</button></li>
           <li><span>音源名</span><input v-model="msvc.name" placeholder="可选" /></li>
         </ul>
         <div class="row">
@@ -285,6 +305,7 @@ onUnmounted(() => {
       <div class="card">
         <h2>更新中心</h2>
         <input v-model="updatePath" class="wide-input" />
+        <button class="mini" @click="pickUpdateFile">选择清单</button>
         <div class="row">
           <button @click="loadUpdate">读取清单</button>
           <button @click="verifyUpdate">验证签名</button>
@@ -359,4 +380,5 @@ input { background: #14161a; color: #dfe6ee; border: 1px solid #2a2f38; border-r
 .row { display: flex; gap: 8px; flex-wrap: wrap; }
 button { margin-top: 12px; background: #263244; color: #9fb6d4; border: 1px solid #33445c; border-radius: 6px; padding: 7px 12px; }
 button:disabled { opacity: .45; }
+button.mini { margin: 0 0 0 6px; padding: 3px 8px; font-size: 12px; }
 </style>
