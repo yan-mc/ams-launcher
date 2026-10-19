@@ -1,0 +1,21 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Enable pnpm
+        run: corepack enable && corepack prepare pnpm@11.28.5 --activate
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Frontend build
+        run: pnpm run build
+      - name: Cargo check
+        run: cargo check --manifest-path src-tauri/Cargo.toml
