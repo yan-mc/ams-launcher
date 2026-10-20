@@ -146,6 +146,199 @@ fn ams_home() -> PathBuf {
     PathBuf::from(local).join("AMS")
 }
 
+
+fn ams_home_marker_path() -> PathBuf {
+    ams_home().join(".ams-home.json")
+}
+
+fn ensure_ams_home_marker() -> Result<(), String> {
+    let home = ams_home();
+    fs::create_dir_all(&home).map_err(|e| format!("创建 AMS_HOME 失败: {e}"))?;
+    let marker = ams_home_marker_path();
+    if marker.is_file() {
+        return Ok(());
+    }
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let value = serde_json::json!({
+        "schema": "ams-home/1",
+        "app_id": "com.yanmc.ams",
+        "created_at": created
+    });
+    fs::write(&marker, serde_json::to_string_pretty(&value).unwrap_or_default())
+        .map_err(|e| format!("写入 AMS_HOME 归属标记失败: {e}"))
+}
+
+fn is_reparse_point(path: &PathBuf) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        return fs::symlink_metadata(path)
+            .map(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+            .unwrap_or(false);
+    }
+    #[cfg(not(windows))]
+    {
+        fs::symlink_metadata(path).map(|m| m.file_type().is_symlink()).unwrap_or(false)
+    }
+}
+
+fn marker_is_ams_owned() -> bool {
+    let text = match fs::read_to_string(ams_home_marker_path()) {
+        Ok(text) => text,
+        Err(_) => return false,
+    };
+    let value: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    value.get("schema").and_then(|v| v.as_str()) == Some("ams-home/1")
+        && value.get("app_id").and_then(|v| v.as_str()) == Some("com.yanmc.ams")
+}
+
+fn canonical_lower(path: &PathBuf) -> String {
+    path.to_string_lossy().replace('/', "\\").to_lowercase()
+}
+
+fn owned_ams_home() -> Result<PathBuf, String> {
+    let home = ams_home();
+    if !home.exists() {
+        return Err(format!("AMS_HOME 不存在，无需清理：{}", home.display()));
+    }
+    if is_reparse_point(&home) {
+        return Err(format!("拒绝清理：AMS_HOME 是符号链接/目录联接：{}", home.display()));
+    }
+    let canonical = fs::canonicalize(&home).map_err(|e| format!("解析 AMS_HOME 失败: {e}"))?;
+    let default_home = env::var("LOCALAPPDATA")
+        .ok()
+        .map(|local| PathBuf::from(local).join("AMS"))
+        .and_then(|p| fs::canonicalize(p).ok());
+    let is_default = default_home
+        .map(|p| canonical_lower(&p) == canonical_lower(&canonical))
+        .unwrap_or(false);
+    let marker_ok = marker_is_ams_owned();
+    if !is_default && !marker_ok {
+        return Err(format!(
+            "拒绝清理：{} 既不是默认 AMS 数据目录，也没有有效的 .ams-home.json 归属标记",
+            canonical.display()
+        ));
+    }
+    let text = canonical_lower(&canonical);
+    if text.is_empty() || text.ends_with("\\users") || text.ends_with("\\appdata\\local") || text.ends_with("\\appdata\\roaming") {
+        return Err(format!("拒绝清理异常路径：{}", canonical.display()));
+    }
+    Ok(canonical)
+}
+
+fn stop_pid_from_json(path: &PathBuf) {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(_) => return,
+    };
+    let value: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let pid = value.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
+    if pid > 0 {
+        let _ = Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output();
+    }
+}
+
+fn remove_owned_path(path: &PathBuf, removed: &mut Vec<String>, kept: &mut Vec<String>) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if is_reparse_point(path) {
+        kept.push(format!("{}（符号链接/目录联接，未删除）", path.display()));
+        return Ok(());
+    }
+    if path.is_dir() {
+        match fs::remove_dir_all(path) {
+            Ok(()) => removed.push(path.display().to_string()),
+            Err(e) => kept.push(format!("{}（删除失败：{e}）", path.display())),
+        }
+    } else {
+        match fs::remove_file(path) {
+            Ok(()) => removed.push(path.display().to_string()),
+            Err(e) => kept.push(format!("{}（删除失败：{e}）", path.display())),
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_ams_data() -> Result<String, String> {
+    let home = owned_ams_home()?;
+    let mut removed: Vec<String> = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
+
+    stop_pid_from_json(&home.join("runtime").join("kernel.json"));
+    stop_pid_from_json(&home.join("runtime").join("ports.json"));
+    std::thread::sleep(Duration::from_millis(800));
+
+    // Only rebuildable/runtime-owned entries are deleted. User models and generated
+    // artifacts stay in place unless the user removes them explicitly.
+    for name in ["kernel", "components", "runtime", "logs"] {
+        remove_owned_path(&home.join(name), &mut removed, &mut kept)?;
+    }
+    for leftover in ["voices", "artifacts", "models", "downloads"] {
+        if home.join(leftover).exists() {
+            kept.push(format!("{}（用户数据，保留）", home.join(leftover).display()));
+        }
+    }
+
+    let mut root_removed = false;
+    if fs::read_dir(&home).map(|mut it| it.next().is_none()).unwrap_or(false) {
+        if fs::remove_dir(&home).is_ok() {
+            root_removed = true;
+        }
+    }
+
+    let report = format!(
+        "AMS 数据清理完成\nAMS_HOME={}\n删除：{}\n保留：{}\n数据目录整体删除：{}",
+        home.display(),
+        if removed.is_empty() { "（无）".to_string() } else { removed.join("；") },
+        if kept.is_empty() { "（无）".to_string() } else { kept.join("；") },
+        root_removed
+    );
+    let log_path = env::temp_dir().join("ams-uninstall.log");
+    let _ = fs::write(&log_path, &report);
+    Ok(report)
+}
+
+#[tauri::command]
+fn open_uninstaller() -> Result<String, String> {
+    let exe = env::current_exe().map_err(|e| format!("读取当前程序失败: {e}"))?;
+    let install_dir = exe.parent().ok_or_else(|| "当前程序没有安装目录".to_string())?;
+    let uninstaller = install_dir.join("uninstall.exe");
+    if !uninstaller.is_file() {
+        return Err(format!("找不到卸载程序：{}", uninstaller.display()));
+    }
+    let expected = env::var("LOCALAPPDATA")
+        .ok()
+        .map(|local| PathBuf::from(local).join("AMS Studio"));
+    let canonical_dir = fs::canonicalize(install_dir).map_err(|e| format!("解析安装目录失败: {e}"))?;
+    let expected_ok = expected
+        .and_then(|p| fs::canonicalize(p).ok())
+        .map(|p| canonical_lower(&p) == canonical_lower(&canonical_dir))
+        .unwrap_or(false);
+    if !expected_ok {
+        return Err(format!(
+            "拒绝启动卸载程序：当前目录不是预期的 AMS Studio 安装目录（{}）",
+            canonical_dir.display()
+        ));
+    }
+    Command::new(&uninstaller)
+        .spawn()
+        .map_err(|e| format!("启动卸载程序失败: {e}"))?;
+    Ok("已打开卸载程序；清理只针对 AMS 自己的数据目录".to_string())
+}
+
 fn dev_root() -> PathBuf {
     if let Ok(value) = env::var("AMS_DEV_ROOT") {
         if !value.trim().is_empty() {
@@ -550,11 +743,51 @@ fn write_kernel_json(pid: u32, url: &str, port: u16) {
     let _ = fs::write(kernel_json_path(), serde_json::to_string_pretty(&value).unwrap_or_default());
 }
 
+fn packaged_kernel_exe() -> Option<PathBuf> {
+    let root = ams_home().join("kernel");
+    let candidates = [
+        root.join("DeepSeek Harness.exe"),
+        root.join("AMS Studio.exe"),
+        root.join("AMS Studio Kernel.exe"),
+        root.join("ams-kernel.exe"),
+        root.join("dsh.exe"),
+        root.join("win-unpacked").join("DeepSeek Harness.exe"),
+        root.join("app").join("DeepSeek Harness.exe"),
+        root.join("dsh").join("DeepSeek Harness.exe"),
+        root.join("dsh").join("win-unpacked").join("DeepSeek Harness.exe"),
+    ];
+    for path in candidates {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    // Last resort: shallow scan for an exe whose name mentions Harness/AMS/kernel.
+    fn scan(dir: &PathBuf, depth: u8) -> Option<PathBuf> {
+        if depth == 0 { return None; }
+        let entries = fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = scan(&path, depth - 1) { return Some(found); }
+            } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                let lower = name.to_lowercase();
+                if lower.ends_with(".exe") && (lower.contains("harness") || lower.contains("ams") || lower.contains("kernel")) {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+    scan(&root, 3)
+}
+
 #[tauri::command]
 fn kernel_status() -> KernelInfo {
     let dsh_home = ams_home().join("kernel").join("dsh").display().to_string();
+    let packaged = packaged_kernel_exe();
+    let dev_installed = dev_root().join("ams-harness").join("package.json").is_file();
     let mut info = KernelInfo {
-        installed: dev_root().join("ams-harness").join("package.json").is_file(),
+        installed: packaged.is_some() || dev_installed,
         running: false,
         starting: false,
         url: String::new(),
@@ -582,9 +815,11 @@ fn kernel_status() -> KernelInfo {
         }
     }
     if info.pid > 0 && process_alive(info.pid) {
-        info.running = !info.url.is_empty();
-        info.starting = info.url.is_empty();
-        if info.starting {
+        info.running = true;
+        info.starting = !packaged.is_none() && info.url.is_empty();
+        if packaged.is_some() {
+            info.message = "运行中（打包内核）".to_string();
+        } else if info.starting {
             info.message = "内核启动中（等待 token URL）".to_string();
         } else {
             info.message = "运行中".to_string();
@@ -602,10 +837,6 @@ fn kernel_status() -> KernelInfo {
 
 #[tauri::command]
 fn start_kernel() -> Result<String, String> {
-    let harness = dev_root().join("ams-harness");
-    if !harness.join("package.json").is_file() {
-        return Err(format!("找不到内核源码：{}", harness.display()));
-    }
     let current = kernel_status();
     if current.pid > 0 && process_alive(current.pid) {
         return Ok(format!("内核已在运行（pid={}）", current.pid));
@@ -615,6 +846,38 @@ fn start_kernel() -> Result<String, String> {
     fs::create_dir_all(runtime_dir()).map_err(|e| format!("创建 runtime 失败: {e}"))?;
     let log = fs::File::create(kernel_log_path()).map_err(|e| format!("创建日志失败: {e}"))?;
     let log_err = log.try_clone().map_err(|e| format!("复制日志句柄失败: {e}"))?;
+
+    if let Some(exe) = packaged_kernel_exe() {
+        let electron_data = ams_home().join("kernel").join("electron-data");
+        fs::create_dir_all(&electron_data).map_err(|e| format!("创建 electron userData 失败: {e}"))?;
+        let mut command = Command::new(&exe);
+        command
+            .current_dir(ams_home().join("kernel"))
+            .arg("--user-data-dir")
+            .arg(&electron_data)
+            .env("AMS_HOME", ams_home())
+            .env("DSH_HOME", &dsh_home)
+            .stdout(std::process::Stdio::from(log))
+            .stderr(std::process::Stdio::from(log_err));
+        for (key, _) in std::env::vars_os() {
+            if let Some(k) = key.to_str() {
+                if k.starts_with("DSH_") || k == "NODE_OPTIONS" || k == "NODE_PATH" || k == "ELECTRON_RUN_AS_NODE" {
+                    command.env_remove(k);
+                }
+            }
+        }
+        command.env("DSH_HOME", &dsh_home).env("AMS_HOME", ams_home());
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+        let child = command.spawn().map_err(|e| format!("启动打包内核失败: {e}"))?;
+        write_kernel_json(child.id(), "", 0);
+        return Ok(format!("打包内核已启动，pid={}；exe={}", child.id(), exe.display()));
+    }
+
+    let harness = dev_root().join("ams-harness");
+    if !harness.join("package.json").is_file() {
+        return Err(format!("找不到内核源码：{}", harness.display()));
+    }
     let mut command = if let Some(corepack) = find_in_path("corepack.cmd") {
         let mut c = Command::new(corepack);
         c.args(["pnpm", "dsh", "web", "--no-open", "--port", "0"]);
@@ -867,7 +1130,7 @@ fn component_assets(value: &serde_json::Value) -> Vec<ComponentAsset> {
 fn sha256_of(path: &PathBuf) -> Result<String, String> {
     let mut file = File::open(path).map_err(|e| format!("打开文件失败: {e}"))?;
     let mut hasher = Sha256::new();
-    let mut buf = [0u8; 1024 * 1024];
+    let mut buf = vec![0u8; 1024 * 1024];
     loop {
         let n = std::io::Read::read(&mut file, &mut buf).map_err(|e| format!("读取文件失败: {e}"))?;
         if n == 0 { break; }
@@ -923,7 +1186,11 @@ fn download_asset_to(asset: &ComponentAsset, dest: &PathBuf) -> Result<u64, Stri
 fn install_component_blocking(asset: &ComponentAsset) -> ComponentResult {
     let result = (|| -> Result<(String, u64), String> {
         let downloads = ams_home().join("components").join("downloads");
-        let target = ams_home().join("components").join(&asset.id);
+        let target = if asset.kind == "kernel" {
+            ams_home().join("kernel")
+        } else {
+            ams_home().join("components").join(&asset.id)
+        };
         fs::create_dir_all(&downloads).map_err(|e| format!("创建下载目录失败: {e}"))?;
         let zip_path = downloads.join(format!("{}-{}.zip", asset.id, asset.version));
         let size = download_asset_to(asset, &zip_path)?;
@@ -989,8 +1256,78 @@ fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+fn cli_trace(line: &str) {
+    let logs = ams_home().join("logs");
+    let _ = fs::create_dir_all(&logs);
+    let path = logs.join("launcher-cli-trace.log");
+    let mut current = fs::read_to_string(&path).unwrap_or_default();
+    current.push_str(line);
+    current.push('\n');
+    let _ = fs::write(path, current);
+}
+
+fn cli_install_components() -> Result<(), String> {
+    cli_trace("start fetch manifest");
+    let value = fetch_component_manifest()?;
+    cli_trace("manifest ok");
+
+    let assets = component_assets(&value);
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!("feed components: {}", assets.len()));
+    for asset in &assets {
+        cli_trace(&format!("installing {} {} {}", asset.id, asset.kind, asset.version));
+        let result = install_component_blocking(asset);
+        cli_trace(&format!("installed {} ok={}", asset.id, result.ok));
+        lines.push(format!("{} {}({}) -> ok={} size={} path={} msg={}", asset.id, asset.kind, asset.version, result.ok, result.size, result.path, result.message));
+    }
+    let logs = ams_home().join("logs");
+    fs::create_dir_all(&logs).ok();
+    let log_path = logs.join("launcher-cli.log");
+    let _ = fs::write(&log_path, lines.join("\n") + "\n");
+    let failed = lines.iter().any(|line| line.contains("ok=false"));
+    if failed {
+        Err(format!("component install had failures; see {}", log_path.display()))
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let args: Vec<String> = env::args().collect();
+    if args.iter().any(|arg| arg == "--uninstall-cleanup") {
+        let result = cleanup_ams_data();
+        let line = match &result {
+            Ok(message) => format!("cleanup ok: {message}"),
+            Err(message) => format!("cleanup failed: {message}"),
+        };
+        let _ = fs::write(env::temp_dir().join("ams-uninstall-result.log"), line);
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
+    let _ = ensure_ams_home_marker();
+    if args.iter().any(|arg| arg == "--start-kernel") {
+        let result = start_kernel();
+        let logs = ams_home().join("logs");
+        fs::create_dir_all(&logs).ok();
+        let line = match &result {
+            Ok(message) => format!("start_kernel ok: {message}"),
+            Err(message) => format!("start_kernel failed: {message}"),
+        };
+        let _ = fs::write(logs.join("launcher-start-kernel.log"), line);
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
+    if args.iter().any(|arg| arg == "--install-components") {
+        let code = match cli_install_components() {
+            Ok(()) => 0,
+            Err(message) => {
+                let logs = ams_home().join("logs");
+                fs::create_dir_all(&logs).ok();
+                let _ = fs::write(logs.join("launcher-cli-error.log"), message);
+                1
+            }
+        };
+        std::process::exit(code);
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1011,7 +1348,8 @@ pub fn run() {
             verify_update_manifest,
             fetch_components,
             install_components,
-            app_version
+            app_version,
+            open_uninstaller
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1021,81 +1359,17 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    fn example_paths() -> (PathBuf, PathBuf) {
-        let root = PathBuf::from("F:\\Deepseek_harness\\AI音乐处理\\08_项目代码\\ams-release\\examples");
-        (root.join("manifest.signed.json"), root.join("keys").join("public.pem"))
-    }
-
     #[test]
-    fn verifies_signed_example() {
-        let (manifest, key) = example_paths();
-        if !manifest.is_file() || !key.is_file() {
-            return;
-        }
-        let result = verify_update_manifest(manifest.display().to_string(), Some(key.display().to_string())).unwrap();
-        assert!(result.valid, "{}", result.message);
-        assert_eq!(result.components, 7);
-        assert!(result.sequence > 0);
-    }
-
-    #[test]
-    fn rejects_tampered_manifest() {
-        let (manifest, key) = example_paths();
-        if !manifest.is_file() || !key.is_file() {
-            return;
-        }
-        let text = fs::read_to_string(&manifest).unwrap();
-        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        value["sequence"] = serde_json::json!(999999);
-        let tampered = std::env::temp_dir().join("ams-tampered-manifest.json");
-        fs::write(&tampered, serde_json::to_string(&value).unwrap()).unwrap();
-        let result = verify_update_manifest(tampered.display().to_string(), Some(key.display().to_string())).unwrap();
-        assert!(!result.valid);
-    }
-
-
-    #[test]
-    fn installs_voicepack_zip() {
-        let pack = PathBuf::from("F:\\Deepseek_harness\\AI音乐处理\\09_发布\\staging\\assets\\voicepack-manbo.zip");
-        if !pack.is_file() {
-            return;
-        }
-        let target = std::env::temp_dir().join("ams-voicepack-test");
-        let _ = fs::remove_dir_all(&target);
-        let message = install_voicepack_zip(&pack, &target).unwrap();
-        assert!(target.join("曼波.pth").is_file(), "{message}");
-        let _ = fs::remove_dir_all(&target);
-    }
-    #[test]
-    fn installs_component_from_local_feed() {
-        let feed = PathBuf::from("F:\\Deepseek_harness\\AI音乐处理\\09_发布\\updates\\ams-components.json");
-        if !feed.is_file() {
-            return;
-        }
-        let temp = std::env::temp_dir().join("ams-component-feed-test");
+    fn cleanup_refuses_unowned_custom_home() {
+        let temp = std::env::temp_dir().join("ams-uninstall-safety-test");
         let _ = fs::remove_dir_all(&temp);
-        unsafe {
-            std::env::set_var("AMS_HOME", temp.as_os_str());
-            std::env::set_var("AMS_COMPONENTS_FEED", feed.as_os_str());
-        }
-        let value = fetch_component_manifest().unwrap();
-        let assets = component_assets(&value);
-        let asset = assets.iter().find(|a| a.id == "catalog.models").unwrap();
-        let result = install_component_blocking(asset);
-        unsafe {
-            std::env::remove_var("AMS_HOME");
-            std::env::remove_var("AMS_COMPONENTS_FEED");
-        }
-        assert!(result.ok, "{}", result.message);
-        assert!(std::path::Path::new(&result.path).join("models.json").is_file());
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(temp.join("keep.txt"), b"keep").unwrap();
+        unsafe { std::env::set_var("AMS_HOME", &temp) };
+        let result = cleanup_ams_data();
+        unsafe { std::env::remove_var("AMS_HOME") };
+        assert!(result.is_err(), "custom home without marker must be refused");
+        assert!(temp.join("keep.txt").is_file(), "unowned file must survive");
         let _ = fs::remove_dir_all(&temp);
-    }
-
-    #[test]
-    fn canonical_bytes_match_python_format() {
-        let value = serde_json::json!({"b": 1, "a": "中文", "signature": "x"});
-        let bytes = canonical_manifest_bytes(&value).unwrap();
-        let text = String::from_utf8(bytes).unwrap();
-        assert_eq!(text, "{\"a\":\"中文\",\"b\":1}");
     }
 }

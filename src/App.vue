@@ -49,6 +49,7 @@ const compAssets = ref<ComponentAsset[]>([]);
 const compResults = ref<ComponentResult[]>([]);
 const compMsg = ref("");
 const compBusy = ref(false);
+const uninstallMsg = ref("");
 let timer: number | undefined;
 
 async function refreshEnv() {
@@ -243,6 +244,14 @@ async function installAllComponents() {
     compBusy.value = false;
   }
 }
+async function requestUninstall() {
+  const ok = window.confirm("确定卸载 AMS Studio？\n\n只删除 AMS 的安装目录和 AMS 数据目录中的 kernel/components/runtime/logs；voices、artifacts 和现有 DSH 的 .dsh 不会被删除。");
+  if (!ok) return;
+  uninstallMsg.value = "正在打开卸载程序…";
+  try { uninstallMsg.value = await invoke<string>("open_uninstaller"); }
+  catch (e) { uninstallMsg.value = "卸载失败：" + String(e); }
+}
+
 async function refreshAll() {
   await Promise.all([refreshEnv(), refreshGateway(), refreshKernel()]);
 }
@@ -312,6 +321,13 @@ onUnmounted(() => {
           <button :disabled="!gateway?.running" @click="stopGateway">停止</button>
           <button @click="refreshGateway">刷新</button>
         </div>
+      </div>
+
+      <div class="card">
+        <h2>维护</h2>
+        <p class="note">卸载只清理 AMS 自己的安装目录和 AMS 数据目录（kernel/components/runtime/logs）；voices、artifacts 以及现有 DSH 的 .dsh 不会被删除。</p>
+        <button @click="requestUninstall">卸载 AMS Studio…</button>
+        <p v-if="uninstallMsg" class="note">{{ uninstallMsg }}</p>
       </div>
 
       <div class="card">
