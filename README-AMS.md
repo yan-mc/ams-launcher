@@ -29,3 +29,14 @@ corepack pnpm tauri build   # 生成 NSIS/MSI（未签名）
 - v0.1.3：音源库卡片（扫描/状态/大小/index），安装默认曼波（从 `AMS_DEFAULT_VOICE_DIR` 复制到 `AMS_HOME/voices/曼波/`）；启动 Gateway 时自动注入 `AMS_RVC_PYTHON`（可用环境变量覆盖）。
 - v0.1.4：内核卡片（启动/停止/状态/token URL 打开）；`DSH_HOME` 隔离在 `AMS_HOME/kernel/dsh`，日志 `AMS_HOME/runtime/kernel.log`；手动实测 DSH web 9911 启动/URL 解析/进程树停止。
 - v0.1.5+：更新中心支持 **Ed25519 签名验证**（`verify_update_manifest`，默认公钥 `ams-release/examples/keys/public.pem`），验证 Python 签名清单通过、篡改/sequence 修改被拒；Rust 单元测试 3 passed。
+## M2 新增（v0.2.0）
+
+- 组件安装：读取 `AMS_COMPONENTS_FEED`（本地 JSON 路径或 HTTPS URL），Ed25519 验签后下载/校验/解包到 `AMS_HOME/components/<id>`；
+- 组件包：plugin bundle 0.3.0 / gateway 0.1.0 / catalog 2026.10.19；
+- 本地示例：
+  ```powershell
+  $env:AMS_COMPONENTS_FEED = "F:/Deepseek_harness/AI音乐处理/09_发布/staging/updates/ams-components.json"
+  $env:AMS_HOME = "F:/Deepseek_harness/AI音乐处理/07_执行计划/_m2_home"
+  ams-launcher.exe
+  ```
+- 注意：GitHub 仓库已私有，默认 GitHub feed 不能匿名下载；正式环境需更新服务器/鉴权，M2 用本地 feed 演示。

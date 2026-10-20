@@ -23,6 +23,8 @@ type JobInfo = { id: string; job_type: string; status: string; progress: number;
 type UpdateComponent = { id: string; kind: string; version: string; size: number };
 type UpdateManifest = { schema: string; channel: string; sequence: number; signature_present: boolean; components: UpdateComponent[]; path: string };
 type UpdateVerify = { valid: boolean; message: string; sequence: number; components: number };
+type ComponentAsset = { id: string; kind: string; version: string; url: string; size: number; sha256: string };
+type ComponentResult = { id: string; ok: boolean; message: string; path: string; size: number };
 
 const version = ref("0.1.2");
 const loading = ref(false);
@@ -43,6 +45,10 @@ const updatePath = ref("F:\\Deepseek_harness\\AI音乐处理\\08_项目代码\\a
 const updateInfo = ref<UpdateManifest | null>(null);
 const updateMsg = ref("");
 const updateVerify = ref<UpdateVerify | null>(null);
+const compAssets = ref<ComponentAsset[]>([]);
+const compResults = ref<ComponentResult[]>([]);
+const compMsg = ref("");
+const compBusy = ref(false);
 let timer: number | undefined;
 
 async function refreshEnv() {
@@ -212,6 +218,31 @@ async function loadUpdate() {
     updateMsg.value = "读取失败：" + String(e);
   }
 }
+async function loadComponents() {
+  compMsg.value = "";
+  try {
+    compAssets.value = await invoke<ComponentAsset[]>("fetch_components");
+    compMsg.value = "组件清单：" + compAssets.value.length + " 个组件";
+  } catch (e) {
+    compAssets.value = [];
+    compMsg.value = "读取组件清单失败：" + String(e);
+  }
+}
+
+async function installAllComponents() {
+  compBusy.value = true;
+  compResults.value = [];
+  compMsg.value = "正在下载并安装组件（大文件可能较久）…";
+  try {
+    compResults.value = await invoke<ComponentResult[]>("install_components", { ids: null });
+    const ok = compResults.value.filter((r) => r.ok).length;
+    compMsg.value = "安装完成：" + ok + "/" + compResults.value.length + " 成功";
+  } catch (e) {
+    compMsg.value = "安装失败：" + String(e);
+  } finally {
+    compBusy.value = false;
+  }
+}
 async function refreshAll() {
   await Promise.all([refreshEnv(), refreshGateway(), refreshKernel()]);
 }
@@ -319,6 +350,25 @@ onUnmounted(() => {
           <li v-for="c in updateInfo.components" :key="c.id"><span>{{ c.kind }}</span><b>{{ c.id }} · {{ c.version }} · {{ c.size }} B</b></li>
         </ul>
       </div>
+      <div class="card wide">
+        <h2>组件安装（本地 feed / GitHub Releases）</h2>
+        <p v-if="compMsg" class="note">{{ compMsg }}</p>
+        <ul v-if="compAssets.length">
+          <li v-for="c in compAssets" :key="c.id">
+            <span>{{ c.kind }}</span>
+            <b>{{ c.id }} · {{ c.version }} · {{ (c.size / 1048576).toFixed(1) }} MB</b>
+            <small>{{ c.url }}</small>
+          </li>
+        </ul>
+        <ul v-if="compResults.length">
+          <li v-for="r in compResults" :key="r.id"><span>{{ r.id }}</span><b :class="r.ok ? 'ok' : 'bad'">{{ r.ok ? "成功" : "失败" }} · {{ r.message }}</b></li>
+        </ul>
+        <div class="row">
+          <button :disabled="compBusy" @click="loadComponents">检查组件清单</button>
+          <button :disabled="compBusy || !compAssets.length" @click="installAllComponents">下载并安装全部</button>
+        </div>
+      </div>
+
       <div class="card wide">
         <h2>音源库</h2>
         <p v-if="voiceMsg" class="note">{{ voiceMsg }}</p>

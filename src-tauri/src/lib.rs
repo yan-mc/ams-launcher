@@ -3,6 +3,7 @@ use base64::Engine;
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::copy;
 use std::env;
@@ -779,6 +780,210 @@ fn verify_update_manifest(path: String, public_key: Option<String>) -> Result<Up
     }
 }
 
+
+const COMPONENT_MANIFEST_URL: &str =
+    "https://github.com/yan-mc/ams-release/releases/latest/download/ams-components.json";
+const UPDATES_PUBLIC_KEY: &str = include_str!("../keys/updates-public.pem");
+
+#[derive(Serialize, Clone)]
+struct ComponentAsset {
+    id: String,
+    kind: String,
+    version: String,
+    url: String,
+    size: u64,
+    sha256: String,
+}
+
+#[derive(Serialize, Clone)]
+struct ComponentResult {
+    id: String,
+    ok: bool,
+    message: String,
+    path: String,
+    size: u64,
+}
+
+fn component_manifest_source() -> String {
+    env::var("AMS_COMPONENTS_FEED").unwrap_or_else(|_| COMPONENT_MANIFEST_URL.to_string())
+}
+
+fn read_text_source(source: &str) -> Result<String, String> {
+    if source.starts_with("http://") || source.starts_with("https://") {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("ams-launcher/0.2.0")
+            .timeout(Duration::from_secs(60))
+            .build()
+            .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+        client
+            .get(source)
+            .send()
+            .and_then(|r| r.error_for_status())
+            .and_then(|r| r.text())
+            .map_err(|e| format!("读取组件清单失败（{source}）: {e}"))
+    } else {
+        let raw = source.strip_prefix("file://").unwrap_or(source);
+        let path = raw.trim_start_matches('/');
+        fs::read_to_string(path).map_err(|e| format!("读取本地组件清单失败（{path}）: {e}"))
+    }
+}
+
+fn fetch_component_manifest() -> Result<serde_json::Value, String> {
+    let source = component_manifest_source();
+    let text = read_text_source(&source)?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("组件清单不是 JSON: {e}"))?;
+    let signature = value.get("signature").and_then(|v| v.as_str()).ok_or_else(|| "组件清单缺少 signature".to_string())?;
+    let signature = signature.strip_prefix("ed25519:").ok_or_else(|| "signature 前缀非法".to_string())?;
+    let signature_bytes = BASE64.decode(signature).map_err(|e| format!("signature base64 非法: {e}"))?;
+    let signature = Signature::from_slice(&signature_bytes).map_err(|e| format!("signature 长度非法: {e}"))?;
+    let key = VerifyingKey::from_public_key_pem(UPDATES_PUBLIC_KEY).map_err(|e| format!("内置公钥解析失败: {e}"))?;
+    let payload = canonical_manifest_bytes(&value)?;
+    key.verify_strict(&payload, &signature)
+        .map_err(|_| "组件清单签名校验失败".to_string())?;
+    Ok(value)
+}
+
+fn component_assets(value: &serde_json::Value) -> Vec<ComponentAsset> {
+    value
+        .get("components")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| ComponentAsset {
+                    id: item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    kind: item.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    version: item.get("version").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    url: item.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    size: item.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+                    sha256: item.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                })
+                .filter(|item| !item.id.is_empty() && !item.url.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn sha256_of(path: &PathBuf) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|e| format!("打开文件失败: {e}"))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 1024 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf).map_err(|e| format!("读取文件失败: {e}"))?;
+        if n == 0 { break; }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn extract_zip(zip_path: &PathBuf, target: &PathBuf) -> Result<u64, String> {
+    let file = File::open(zip_path).map_err(|e| format!("打开 zip 失败: {e}"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 zip 失败: {e}"))?;
+    fs::create_dir_all(target).map_err(|e| format!("创建组件目录失败: {e}"))?;
+    let mut total = 0u64;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|e| format!("读取 zip 条目失败: {e}"))?;
+        let Some(relative) = entry.enclosed_name() else { continue };
+        let dest = target.join(&relative);
+        if entry.is_dir() {
+            fs::create_dir_all(&dest).map_err(|e| format!("创建目录失败: {e}"))?;
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {e}"))?;
+        }
+        let mut out = File::create(&dest).map_err(|e| format!("写出失败: {e}"))?;
+        total += copy(&mut entry, &mut out).map_err(|e| format!("解包失败: {e}"))?;
+    }
+    Ok(total)
+}
+
+fn download_asset_to(asset: &ComponentAsset, dest: &PathBuf) -> Result<u64, String> {
+    if asset.url.starts_with("http://") || asset.url.starts_with("https://") {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("ams-launcher/0.2.0")
+            .timeout(Duration::from_secs(1800))
+            .build()
+            .map_err(|e| format!("HTTP 客户端失败: {e}"))?;
+        let mut response = client
+            .get(&asset.url)
+            .send()
+            .and_then(|r| r.error_for_status())
+            .map_err(|e| format!("下载 {} 失败: {e}", asset.id))?;
+        let mut file = File::create(dest).map_err(|e| format!("创建下载文件失败: {e}"))?;
+        copy(&mut response, &mut file).map_err(|e| format!("写入下载文件失败: {e}"))?;
+    } else {
+        let raw = asset.url.strip_prefix("file://").unwrap_or(&asset.url);
+        let src = raw.trim_start_matches('/');
+        fs::copy(src, dest).map_err(|e| format!("复制本地组件失败（{src}）: {e}"))?;
+    }
+    Ok(fs::metadata(dest).map(|m| m.len()).unwrap_or(0))
+}
+
+fn install_component_blocking(asset: &ComponentAsset) -> ComponentResult {
+    let result = (|| -> Result<(String, u64), String> {
+        let downloads = ams_home().join("components").join("downloads");
+        let target = ams_home().join("components").join(&asset.id);
+        fs::create_dir_all(&downloads).map_err(|e| format!("创建下载目录失败: {e}"))?;
+        let zip_path = downloads.join(format!("{}-{}.zip", asset.id, asset.version));
+        let size = download_asset_to(asset, &zip_path)?;
+        if asset.size > 0 && size != asset.size {
+            return Err(format!("{} 大小不匹配：期望 {}，实际 {}", asset.id, asset.size, size));
+        }
+        let sha = sha256_of(&zip_path)?;
+        if !sha.eq_ignore_ascii_case(&asset.sha256) {
+            return Err(format!("{} sha256 不匹配：期望 {}，实际 {}", asset.id, asset.sha256, sha));
+        }
+        let extracted = extract_zip(&zip_path, &target)?;
+        Ok((format!("已安装 {} {}（{} B 下载，{} B 解包）", asset.id, asset.version, size, extracted), size))
+    })();
+    match result {
+        Ok((message, size)) => ComponentResult {
+            id: asset.id.clone(),
+            ok: true,
+            message,
+            path: ams_home().join("components").join(&asset.id).display().to_string(),
+            size,
+        },
+        Err(message) => ComponentResult {
+            id: asset.id.clone(),
+            ok: false,
+            message,
+            path: String::new(),
+            size: 0,
+        },
+    }
+}
+
+#[tauri::command]
+async fn fetch_components() -> Result<Vec<ComponentAsset>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let value = fetch_component_manifest()?;
+        Ok(component_assets(&value))
+    })
+    .await
+    .map_err(|e| format!("任务失败: {e}"))?
+}
+
+#[tauri::command]
+async fn install_components(ids: Option<Vec<String>>) -> Result<Vec<ComponentResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let value = fetch_component_manifest()?;
+        let mut results = Vec::new();
+        for asset in component_assets(&value) {
+            if let Some(ref filter) = ids {
+                if !filter.iter().any(|id| id == &asset.id) {
+                    continue;
+                }
+            }
+            results.push(install_component_blocking(&asset));
+        }
+        Ok(results)
+    })
+    .await
+    .map_err(|e| format!("任务失败: {e}"))?
+}
+
 #[tauri::command]
 fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -804,6 +1009,8 @@ pub fn run() {
             job_status,
             read_update_manifest,
             verify_update_manifest,
+            fetch_components,
+            install_components,
             app_version
         ])
         .run(tauri::generate_context!())
@@ -859,6 +1066,31 @@ mod tests {
         assert!(target.join("曼波.pth").is_file(), "{message}");
         let _ = fs::remove_dir_all(&target);
     }
+    #[test]
+    fn installs_component_from_local_feed() {
+        let feed = PathBuf::from("F:\\Deepseek_harness\\AI音乐处理\\09_发布\\updates\\ams-components.json");
+        if !feed.is_file() {
+            return;
+        }
+        let temp = std::env::temp_dir().join("ams-component-feed-test");
+        let _ = fs::remove_dir_all(&temp);
+        unsafe {
+            std::env::set_var("AMS_HOME", temp.as_os_str());
+            std::env::set_var("AMS_COMPONENTS_FEED", feed.as_os_str());
+        }
+        let value = fetch_component_manifest().unwrap();
+        let assets = component_assets(&value);
+        let asset = assets.iter().find(|a| a.id == "catalog.models").unwrap();
+        let result = install_component_blocking(asset);
+        unsafe {
+            std::env::remove_var("AMS_HOME");
+            std::env::remove_var("AMS_COMPONENTS_FEED");
+        }
+        assert!(result.ok, "{}", result.message);
+        assert!(std::path::Path::new(&result.path).join("models.json").is_file());
+        let _ = fs::remove_dir_all(&temp);
+    }
+
     #[test]
     fn canonical_bytes_match_python_format() {
         let value = serde_json::json!({"b": 1, "a": "中文", "signature": "x"});
