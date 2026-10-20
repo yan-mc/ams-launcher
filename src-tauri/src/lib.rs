@@ -19,6 +19,14 @@ use std::os::windows::process::CommandExt;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+/// Spawn a console child without flashing a console window from the GUI launcher.
+fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
+
 #[derive(Serialize, Clone)]
 struct EnvItem {
     label: String,
@@ -108,7 +116,7 @@ fn item(label: &str, value: String, ok: bool) -> EnvItem {
 }
 
 fn run_ps(script: &str) -> String {
-    let output = Command::new("powershell.exe")
+    let output = hidden_command("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .output();
     match output {
@@ -122,7 +130,7 @@ fn run_ps(script: &str) -> String {
 }
 
 fn run_cmd(program: &str, args: &[&str]) -> String {
-    match Command::new(program).args(args).output() {
+    match hidden_command(program).args(args).output() {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -244,7 +252,7 @@ fn stop_pid_from_json(path: &PathBuf) {
     };
     let pid = value.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
     if pid > 0 {
-        let _ = Command::new("taskkill.exe")
+        let _ = hidden_command("taskkill.exe")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .output();
     }
@@ -522,7 +530,7 @@ fn stop_gateway() -> Result<String, String> {
     if pid == 0 {
         return Err("ports.json 中没有有效 pid".to_string());
     }
-    let output = Command::new("taskkill.exe")
+    let output = hidden_command("taskkill.exe")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .output();
     match output {
@@ -697,7 +705,7 @@ fn process_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
-    let output = Command::new("tasklist.exe")
+    let output = hidden_command("tasklist.exe")
         .args(["/FI", &format!("PID eq {pid}"), "/NH"])
         .output();
     match output {
@@ -746,6 +754,7 @@ fn write_kernel_json(pid: u32, url: &str, port: u16) {
 fn packaged_kernel_exe() -> Option<PathBuf> {
     let root = ams_home().join("kernel");
     let candidates = [
+        root.join("AMS Kernel.exe"),
         root.join("DeepSeek Harness.exe"),
         root.join("AMS Studio.exe"),
         root.join("AMS Studio Kernel.exe"),
@@ -906,7 +915,7 @@ fn stop_kernel() -> Result<String, String> {
         let _ = fs::remove_file(kernel_json_path());
         return Ok("内核未运行".to_string());
     }
-    let output = Command::new("taskkill.exe")
+    let output = hidden_command("taskkill.exe")
         .args(["/PID", &info.pid.to_string(), "/T", "/F"])
         .output();
     let _ = fs::remove_file(kernel_json_path());
