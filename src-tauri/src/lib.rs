@@ -2,7 +2,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::{Signature, VerifyingKey};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::copy;
@@ -144,7 +144,22 @@ fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("").trim().to_string()
 }
 
+/// The packaged install keeps every byte of AMS state below its own directory.
+fn installed_data_dir() -> Option<PathBuf> {
+    let exe = env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    if dir.join("uninstall.exe").is_file() {
+        Some(dir.join("data"))
+    } else {
+        None
+    }
+}
+
 fn ams_home() -> PathBuf {
+    if let Some(data) = installed_data_dir() {
+        return data;
+    }
+    // Development fallback only. The installed build never reads AMS_HOME.
     if let Ok(value) = env::var("AMS_HOME") {
         if !value.trim().is_empty() {
             return PathBuf::from(value);
@@ -220,9 +235,8 @@ fn owned_ams_home() -> Result<PathBuf, String> {
         return Err(format!("拒绝清理：AMS_HOME 是符号链接/目录联接：{}", home.display()));
     }
     let canonical = fs::canonicalize(&home).map_err(|e| format!("解析 AMS_HOME 失败: {e}"))?;
-    let default_home = env::var("LOCALAPPDATA")
-        .ok()
-        .map(|local| PathBuf::from(local).join("AMS"))
+    let default_home = installed_data_dir()
+        .or_else(|| env::var("LOCALAPPDATA").ok().map(|local| PathBuf::from(local).join("AMS")))
         .and_then(|p| fs::canonicalize(p).ok());
     let is_default = default_home
         .map(|p| canonical_lower(&p) == canonical_lower(&canonical))
@@ -327,24 +341,104 @@ fn open_uninstaller() -> Result<String, String> {
     if !uninstaller.is_file() {
         return Err(format!("找不到卸载程序：{}", uninstaller.display()));
     }
-    let expected = env::var("LOCALAPPDATA")
-        .ok()
-        .map(|local| PathBuf::from(local).join("AMS Studio"));
     let canonical_dir = fs::canonicalize(install_dir).map_err(|e| format!("解析安装目录失败: {e}"))?;
-    let expected_ok = expected
-        .and_then(|p| fs::canonicalize(p).ok())
-        .map(|p| canonical_lower(&p) == canonical_lower(&canonical_dir))
-        .unwrap_or(false);
-    if !expected_ok {
-        return Err(format!(
-            "拒绝启动卸载程序：当前目录不是预期的 AMS Studio 安装目录（{}）",
-            canonical_dir.display()
-        ));
+    let canonical_exe = fs::canonicalize(&exe).map_err(|e| format!("解析当前程序失败: {e}"))?;
+    if canonical_exe.parent() != Some(canonical_dir.as_path()) {
+        return Err(format!("拒绝启动卸载程序：{} 不在当前安装目录", canonical_exe.display()));
     }
     Command::new(&uninstaller)
         .spawn()
         .map_err(|e| format!("启动卸载程序失败: {e}"))?;
     Ok("已打开卸载程序；清理只针对 AMS 自己的数据目录".to_string())
+}
+
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct ConnectionConfig {
+    base_url: String,
+    api_key: String,
+}
+
+#[derive(Serialize)]
+struct ConnectionInfo {
+    base_url: String,
+    has_api_key: bool,
+    configured: bool,
+    message: String,
+}
+
+fn connection_path() -> PathBuf {
+    ams_home().join("config").join("connection.json")
+}
+
+fn read_connection() -> Option<ConnectionConfig> {
+    let text = fs::read_to_string(connection_path()).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn yaml_quote(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("'{}'", escaped.replace('\'', "''"))
+}
+
+/// Write the two-user-input connection into the AMS Kernel profile and credential store.
+fn apply_connection_config(config: &ConnectionConfig) -> Result<(), String> {
+    let base_url = config.base_url.trim();
+    let api_key = config.api_key.trim();
+    if base_url.is_empty() || api_key.is_empty() {
+        return Err("网址和 Key 都不能为空".to_string());
+    }
+    let dsh_home = ams_home().join("kernel").join("dsh");
+    let profile = dsh_home.join("profiles").join("desktop");
+    fs::create_dir_all(&profile).map_err(|e| format!("创建 profile 失败: {e}"))?;
+    let credentials = format!("version: 1\nrefs:\n  AMS_API_KEY: {}\n", yaml_quote(api_key));
+    fs::write(dsh_home.join(".credentials.yaml"), credentials).map_err(|e| format!("写入凭据失败: {e}"))?;
+    let patch_path = profile.join("cordis.patch.yml");
+    let mut patch = fs::read_to_string(&patch_path).unwrap_or_default();
+    let block = format!("- id: llm-deepseek-ams\n  name: '@deepseek-ai/dsh-llm-deepseek-api-key'\n  config:\n    baseURL: {}\n    apiKeyEnv: AMS_API_KEY\n", yaml_quote(base_url));
+    if patch.contains("id: llm-deepseek-ams") {
+        if let Some(start) = patch.find("- id: llm-deepseek-ams") {
+            let tail = &patch[start..];
+            let end = tail[1..].find("\n- ").map(|i| start + 1 + i).unwrap_or(patch.len());
+            patch.replace_range(start..end, block.trim_end());
+        }
+    } else {
+        if !patch.is_empty() && !patch.ends_with('\n') { patch.push('\n'); }
+        patch.push_str(&block);
+    }
+    fs::write(&patch_path, patch).map_err(|e| format!("写入 profile patch 失败: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn connection_status() -> ConnectionInfo {
+    match read_connection() {
+        Some(config) => {
+            let configured = !config.base_url.is_empty() && !config.api_key.is_empty();
+            ConnectionInfo {
+                base_url: config.base_url,
+                has_api_key: !config.api_key.is_empty(),
+                configured,
+                message: "连接配置只保存在 AMS 安装目录".to_string(),
+            }
+        },
+        None => ConnectionInfo { base_url: String::new(), has_api_key: false, configured: false, message: "尚未配置".to_string() },
+    }
+}
+
+#[tauri::command]
+fn save_connection(base_url: String, api_key: String) -> Result<String, String> {
+    let mut api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        if let Some(existing) = read_connection() { api_key = existing.api_key; }
+    }
+    let config = ConnectionConfig { base_url: base_url.trim().to_string(), api_key };
+    apply_connection_config(&config)?;
+    let path = connection_path();
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?; }
+    fs::write(&path, serde_json::to_string_pretty(&config).map_err(|e| format!("序列化配置失败: {e}"))? )
+        .map_err(|e| format!("保存连接配置失败: {e}"))?;
+    Ok(format!("已保存到 {}；重启 AMS Kernel 后生效", path.display()))
 }
 
 fn dev_root() -> PathBuf {
@@ -907,6 +1001,11 @@ fn start_kernel() -> Result<String, String> {
     fs::create_dir_all(runtime_dir()).map_err(|e| format!("创建 runtime 失败: {e}"))?;
     let log = fs::File::create(kernel_log_path()).map_err(|e| format!("创建日志失败: {e}"))?;
     let log_err = log.try_clone().map_err(|e| format!("复制日志句柄失败: {e}"))?;
+    if let Some(config) = read_connection() {
+        if !config.base_url.trim().is_empty() && !config.api_key.trim().is_empty() {
+            apply_connection_config(&config)?;
+        }
+    }
 
     if let Some(exe) = packaged_kernel_exe() {
         let electron_data = ams_home().join("kernel").join("electron-data");
@@ -916,18 +1015,17 @@ fn start_kernel() -> Result<String, String> {
             .current_dir(ams_home().join("kernel"))
             .arg("--user-data-dir")
             .arg(&electron_data)
-            .env("AMS_HOME", ams_home())
             .env("DSH_HOME", &dsh_home)
             .stdout(std::process::Stdio::from(log))
             .stderr(std::process::Stdio::from(log_err));
         for (key, _) in std::env::vars_os() {
             if let Some(k) = key.to_str() {
-                if k.starts_with("DSH_") || k == "NODE_OPTIONS" || k == "NODE_PATH" || k == "ELECTRON_RUN_AS_NODE" {
+                if k.starts_with("DSH_") || k.starts_with("AMS_") || k == "NODE_OPTIONS" || k == "NODE_PATH" || k == "ELECTRON_RUN_AS_NODE" {
                     command.env_remove(k);
                 }
             }
         }
-        command.env("DSH_HOME", &dsh_home).env("AMS_HOME", ams_home());
+        command.env("DSH_HOME", &dsh_home);
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
         let child = command.spawn().map_err(|e| format!("启动打包内核失败: {e}"))?;
@@ -1083,7 +1181,10 @@ fn verify_update_manifest(path: String, public_key: Option<String>) -> Result<Up
     let signature_bytes = BASE64.decode(signature_text).map_err(|e| format!("signature base64 非法: {e}"))?;
     let signature = Signature::from_slice(&signature_bytes).map_err(|e| format!("签名长度非法: {e}"))?;
     let key_path = public_key.unwrap_or_else(|| {
-        dev_root().join("ams-release").join("examples").join("keys").join("public.pem").display().to_string()
+        env::var("AMS_UPDATE_PUBLIC_KEY")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| ams_home().join("runtime").join("update-public.pem").display().to_string())
     });
     let key_text = fs::read_to_string(&key_path).map_err(|e| format!("读取公钥失败（{key_path}）: {e}"))?;
     let key = VerifyingKey::from_public_key_pem(&key_text).map_err(|e| format!("解析公钥失败: {e}"))?;
@@ -1410,7 +1511,9 @@ pub fn run() {
             fetch_components,
             install_components,
             app_version,
-            open_uninstaller
+            open_uninstaller,
+            connection_status,
+            save_connection
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

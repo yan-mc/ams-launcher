@@ -19,6 +19,7 @@ type GatewayInfo = {
 type ComponentItem = { name: string; state: string; detail: string; ok: boolean };
 type VoiceInfo = { name: string; status: string; info: string; sr: string; size_mb: number; has_index: boolean; message: string };
 type KernelInfo = { installed: boolean; running: boolean; starting: boolean; url: string; port: number; pid: number; dsh_home: string; log: string; message: string };
+type ConnectionInfo = { base_url: string; has_api_key: boolean; configured: boolean; message: string };
 type JobInfo = { id: string; job_type: string; status: string; progress: number; stage: string; error: string };
 type UpdateComponent = { id: string; kind: string; version: string; size: number };
 type UpdateManifest = { schema: string; channel: string; sequence: number; signature_present: boolean; components: UpdateComponent[]; path: string };
@@ -50,6 +51,11 @@ const compResults = ref<ComponentResult[]>([]);
 const compMsg = ref("");
 const compBusy = ref(false);
 const uninstallMsg = ref("");
+const connection = ref<ConnectionInfo | null>(null);
+const connBase = ref("");
+const connKey = ref("");
+const connMsg = ref("");
+const connBusy = ref(false);
 let timer: number | undefined;
 
 async function refreshEnv() {
@@ -252,8 +258,26 @@ async function requestUninstall() {
   catch (e) { uninstallMsg.value = "卸载失败：" + String(e); }
 }
 
+async function refreshConnection() {
+  try {
+    connection.value = await invoke<ConnectionInfo>("connection_status");
+    if (!connBase.value) connBase.value = connection.value.base_url;
+  } catch (e) { connMsg.value = String(e); }
+}
+
+async function saveConnection() {
+  connBusy.value = true;
+  connMsg.value = "";
+  try {
+    connMsg.value = await invoke<string>("save_connection", { baseUrl: connBase.value, apiKey: connKey.value });
+    connKey.value = "";
+    await refreshConnection();
+  } catch (e) { connMsg.value = "保存失败：" + String(e); }
+  finally { connBusy.value = false; }
+}
+
 async function refreshAll() {
-  await Promise.all([refreshEnv(), refreshGateway(), refreshKernel()]);
+  await Promise.all([refreshEnv(), refreshGateway(), refreshKernel(), refreshConnection()]);
 }
 
 onMounted(() => {
@@ -276,6 +300,20 @@ onUnmounted(() => {
     </header>
 
     <section class="grid">
+      <div class="card">
+        <h2>连接设置（只保存在 AMS 安装目录）</h2>
+        <ul>
+          <li><span>网址</span><input v-model="connBase" placeholder="https://api.deepseek.com/anthropic" /></li>
+          <li><span>Key</span><input v-model="connKey" type="password" placeholder="留空表示不修改已保存的 Key" /></li>
+        </ul>
+        <p class="note" v-if="connection">当前：{{ connection.configured ? "已配置" : "未配置" }} · {{ connection.message }}</p>
+        <div class="row">
+          <button :disabled="connBusy" @click="saveConnection">{{ connBusy ? "保存中…" : "保存连接" }}</button>
+          <button @click="refreshConnection">刷新</button>
+        </div>
+        <p v-if="connMsg" class="note">{{ connMsg }}</p>
+      </div>
+
       <div class="card">
         <h2>环境检测</h2>
         <p v-if="error" class="err">{{ error }}</p>
