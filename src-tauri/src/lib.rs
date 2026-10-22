@@ -328,7 +328,9 @@ fn cleanup_ams_data() -> Result<String, String> {
         if kept.is_empty() { "（无）".to_string() } else { kept.join("；") },
         root_removed
     );
-    let log_path = env::temp_dir().join("ams-uninstall.log");
+    // Keep the uninstall report inside the AMS-owned install data tree; never write
+    // outside the install directory.
+    let log_path = home.join("uninstall.log");
     let _ = fs::write(&log_path, &report);
     Ok(report)
 }
@@ -1463,7 +1465,10 @@ pub fn run() {
             Ok(message) => format!("cleanup ok: {message}"),
             Err(message) => format!("cleanup failed: {message}"),
         };
-        let _ = fs::write(env::temp_dir().join("ams-uninstall-result.log"), line);
+        // Keep this diagnostic inside the install directory as well.
+        if let Some(parent) = ams_home().parent() {
+            let _ = fs::write(parent.join("uninstall-result.log"), line);
+        }
         std::process::exit(if result.is_ok() { 0 } else { 1 });
     }
     let _ = ensure_ams_home_marker();
