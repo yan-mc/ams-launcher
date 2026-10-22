@@ -41,7 +41,7 @@ const kernelMsg = ref("");
 const msvc = ref({ input: "", reference: "", out: "", name: "" });
 const msvcJob = ref<JobInfo | null>(null);
 const msvcMsg = ref("");
-const updatePath = ref("F:\\Deepseek_harness\\AI音乐处理\\08_项目代码\\ams-release\\examples\\manifest.signed.json");
+const updatePath = ref("");
 const updateInfo = ref<UpdateManifest | null>(null);
 const updateMsg = ref("");
 const updateVerify = ref<UpdateVerify | null>(null);
@@ -333,8 +333,8 @@ onUnmounted(() => {
       <div class="card">
         <h2>MSVC → pth 转换器</h2>
         <ul>
-          <li><span>输入 .msvc</span><input v-model="msvc.input" placeholder="F:\\...\\xxx.msvc" /><button class="mini" @click="pickMsvcInput">选择</button></li>
-          <li><span>参考 pth</span><input v-model="msvc.reference" placeholder="F:\\ai歌曲\\0 曼波\\manbo.pth" /><button class="mini" @click="pickReference">选择</button></li>
+          <li><span>输入 .msvc</span><input v-model="msvc.input" placeholder="选择或输入 .msvc 文件路径" /><button class="mini" @click="pickMsvcInput">选择</button></li>
+          <li><span>参考 pth</span><input v-model="msvc.reference" placeholder="可选：参考 .pth 路径" /><button class="mini" @click="pickReference">选择</button></li>
           <li><span>输出目录</span><input v-model="msvc.out" placeholder="留空=AMS_HOME/artifacts" /><button class="mini" @click="pickOutDir">选择</button></li>
           <li><span>音源名</span><input v-model="msvc.name" placeholder="可选" /></li>
         </ul>
@@ -399,7 +399,7 @@ onUnmounted(() => {
           <button :disabled="voiceBusy" @click="scanVoices">扫描音源</button>
           <button :disabled="voiceBusy" @click="installDefaultVoice">安装默认曼波</button>
         </div>
-        <p class="note">默认音源从 AMS_DEFAULT_VOICE_DIR（默认 F:\ai歌曲\0 曼波）复制到 AMS_HOME/voices/曼波/，不进 Git/安装包。</p>
+        <p class="note">默认音源从 AMS_DEFAULT_VOICE_PACK 或 AMS_DEFAULT_VOICE_DIR 复制到 AMS_HOME/voices/曼波/，不进 Git/安装包。</p>
       </div>
 
       <div class="card wide">

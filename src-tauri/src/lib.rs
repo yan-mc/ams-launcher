@@ -348,20 +348,57 @@ fn open_uninstaller() -> Result<String, String> {
 }
 
 fn dev_root() -> PathBuf {
+    // Development-only convenience. Packaged installs must never depend on a
+    // machine-specific checkout, so this only honours an explicit override or
+    // a source tree that happens to sit next to the current directory/executable.
     if let Ok(value) = env::var("AMS_DEV_ROOT") {
         if !value.trim().is_empty() {
             return PathBuf::from(value);
         }
     }
-    PathBuf::from("F:\\Deepseek_harness\\AI音乐处理\\08_项目代码")
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.join("ams-services").is_dir() {
+                return dir.to_path_buf();
+            }
+        }
+    }
+    if let Ok(cwd) = env::current_dir() {
+        if cwd.join("ams-services").is_dir() {
+            return cwd;
+        }
+    }
+    ams_home().join("components").join("install-root")
 }
 
 fn gateway_dir() -> PathBuf {
-    dev_root().join("ams-services").join("gateway")
+    if let Ok(value) = env::var("AMS_GATEWAY_DIR") {
+        if !value.trim().is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+    let installed = ams_home().join("components").join("service.gateway");
+    if installed.join("ams-gateway.exe").is_file()
+        || installed.join(".venv").join("Scripts").join("python.exe").is_file()
+    {
+        return installed;
+    }
+    let dev = dev_root().join("ams-services").join("gateway");
+    if dev.join(".venv").join("Scripts").join("python.exe").is_file()
+        || dev.join("app").join("__main__.py").is_file()
+    {
+        return dev;
+    }
+    installed
 }
 
 fn gateway_python() -> PathBuf {
     gateway_dir().join(".venv").join("Scripts").join("python.exe")
+}
+
+fn gateway_installed() -> bool {
+    let dir = gateway_dir();
+    dir.join("ams-gateway.exe").is_file() || gateway_python().is_file()
 }
 
 fn read_ports() -> Option<(u16, u32)> {
@@ -441,7 +478,7 @@ fn get_environment() -> Vec<EnvItem> {
 fn gateway_status() -> GatewayInfo {
     let home = ams_home().display().to_string();
     let gdir = gateway_dir().display().to_string();
-    let installed = gateway_python().is_file();
+    let installed = gateway_installed();
     let mut info = GatewayInfo {
         installed,
         running: false,
@@ -491,28 +528,39 @@ fn gateway_status() -> GatewayInfo {
 
 #[tauri::command]
 fn start_gateway() -> Result<String, String> {
-    let python = gateway_python();
-    if !python.is_file() {
-        return Err(format!("找不到 Gateway Python：{}", python.display()));
-    }
     let gdir = gateway_dir();
     let home = ams_home();
     fs::create_dir_all(&home).map_err(|e| format!("创建 AMS_HOME 失败: {e}"))?;
-    let mut command = Command::new(&python);
-    command
-        .current_dir(&gdir)
-        .args(["-m", "app", "--ams-home"])
-        .arg(&home)
-        .args(["--port", "0", "--log-level", "INFO"])
-        .env("AMS_HOME", &home);
+    let mut command = if gdir.join("ams-gateway.exe").is_file() {
+        // Packaged component: a self-contained executable shipped under AMS_HOME/components.
+        let mut c = Command::new(gdir.join("ams-gateway.exe"));
+        c.current_dir(&gdir)
+            .arg("--ams-home")
+            .arg(&home)
+            .args(["--port", "0", "--log-level", "INFO"]);
+        c
+    } else {
+        let python = gateway_python();
+        if !python.is_file() {
+            return Err(format!("Gateway 未安装：{} 或 {}", gdir.join("ams-gateway.exe").display(), python.display()));
+        }
+        let mut c = Command::new(&python);
+        c.current_dir(&gdir)
+            .args(["-m", "app", "--ams-home"])
+            .arg(&home)
+            .args(["--port", "0", "--log-level", "INFO"]);
+        c
+    };
+    command.env("AMS_HOME", &home);
+    // Backend roots are user/environment configuration, never a fixed drive path.
     if let Ok(value) = env::var("AMS_RVC_PYTHON") {
         if !value.trim().is_empty() {
             command.env("AMS_RVC_PYTHON", value);
         }
-    } else {
-        let default_rvc = PathBuf::from("F:\\ai歌曲\\RVC20260311\\runtime\\python.exe");
-        if default_rvc.is_file() {
-            command.env("AMS_RVC_PYTHON", default_rvc);
+    } else if let Ok(root) = env::var("AMS_RVC_ROOT") {
+        let candidate = PathBuf::from(root).join("runtime").join("python.exe");
+        if candidate.is_file() {
+            command.env("AMS_RVC_PYTHON", candidate);
         }
     }
     #[cfg(windows)]
@@ -544,24 +592,25 @@ fn stop_gateway() -> Result<String, String> {
 
 #[tauri::command]
 fn component_status() -> Vec<ComponentItem> {
-    let root = dev_root();
     let mut items = Vec::new();
 
-    let kernel = root.join("ams-harness");
-    let kernel_ok = kernel.join("package.json").is_file();
-    let kernel_built = kernel.join("node_modules").is_dir();
+    let kernel = ams_home().join("kernel");
+    let kernel_exe = kernel.join("AMS Kernel.exe");
+    let kernel_ok = kernel_exe.is_file() || kernel.join("package.json").is_file();
+    let kernel_built = kernel_exe.is_file() || kernel.join("node_modules").is_dir();
     items.push(ComponentItem {
-        name: "内核（DSH fork）".to_string(),
-        state: if kernel_built { "已构建".to_string() } else if kernel_ok { "已安装未构建".to_string() } else { "未安装".to_string() },
+        name: "内核（AMS Kernel）".to_string(),
+        state: if kernel_built { "已安装".to_string() } else if kernel_ok { "未完成".to_string() } else { "未安装".to_string() },
         detail: kernel.display().to_string(),
-        ok: kernel_ok,
+        ok: kernel_exe.is_file(),
     });
 
-    let plugins_dir = root.join("ams-plugins");
-    let plugin_pkgs = plugins_dir.join("packages").is_dir();
+    let plugins_dir = ams_home().join("components").join("plugin.ams.music.bundle");
+    let plugin_pkgs = plugins_dir.join("ams-music-bundle-0.3.0.tgz").is_file()
+        || plugins_dir.join("ams-plugin-core-0.3.0.tgz").is_file();
     items.push(ComponentItem {
         name: "音乐插件".to_string(),
-        state: if plugin_pkgs { "源码就绪".to_string() } else { "未安装".to_string() },
+        state: if plugin_pkgs { "已下载".to_string() } else { "未安装".to_string() },
         detail: plugins_dir.display().to_string(),
         ok: plugin_pkgs,
     });
@@ -673,7 +722,10 @@ fn install_default_voice() -> Result<String, String> {
             return install_voicepack_zip(&pack_path, &target_dir);
         }
     }
-    let source = env::var("AMS_DEFAULT_VOICE_DIR").unwrap_or_else(|_| "F:\\ai歌曲\\0 曼波".to_string());
+    let source = env::var("AMS_DEFAULT_VOICE_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "未配置默认音源：请设置 AMS_DEFAULT_VOICE_PACK 或 AMS_DEFAULT_VOICE_DIR".to_string())?;
     install_voicepack_dir(&PathBuf::from(source), &target_dir)
 }
 
