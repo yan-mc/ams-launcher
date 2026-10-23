@@ -50,6 +50,8 @@ const compAssets = ref<ComponentAsset[]>([]);
 const compResults = ref<ComponentResult[]>([]);
 const compMsg = ref("");
 const compBusy = ref(false);
+const pluginBusy = ref(false);
+const pluginMsg = ref("");
 const uninstallMsg = ref("");
 const connection = ref<ConnectionInfo | null>(null);
 const connBase = ref("");
@@ -276,6 +278,19 @@ async function saveConnection() {
   finally { connBusy.value = false; }
 }
 
+async function installPlugins() {
+  pluginBusy.value = true;
+  pluginMsg.value = "";
+  try {
+    pluginMsg.value = await invoke<string>("install_music_plugins");
+    await refreshKernel();
+  } catch (e) {
+    pluginMsg.value = "插件安装失败：" + String(e);
+  } finally {
+    pluginBusy.value = false;
+  }
+}
+
 async function refreshAll() {
   await Promise.all([refreshEnv(), refreshGateway(), refreshKernel(), refreshConnection()]);
 }
@@ -420,7 +435,10 @@ onUnmounted(() => {
         <div class="row">
           <button :disabled="compBusy" @click="loadComponents">检查组件清单</button>
           <button :disabled="compBusy || !compAssets.length" @click="installAllComponents">下载并安装全部</button>
+          <button :disabled="pluginBusy" @click="installPlugins">安装音乐插件到内核</button>
         </div>
+        <p v-if="pluginMsg" class="note">{{ pluginMsg }}</p>
+        <p class="note">插件安装需要内核 profile 已初始化：先启动一次 AMS Kernel，停止后再点“安装音乐插件到内核”。</p>
       </div>
 
       <div class="card wide">

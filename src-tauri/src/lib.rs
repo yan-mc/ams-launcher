@@ -383,6 +383,79 @@ fn yaml_quote(value: &str) -> String {
     format!("'{}'", escaped.replace('\'', "''"))
 }
 
+/// Normalize the profile patch: a default empty array marker must not coexist
+/// with top-level list entries, and the AMS shell should not expose account/settings UI.
+fn normalize_profile_patch(input: &str) -> String {
+    input
+        .lines()
+        .filter(|line| line.trim() != "[]")
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn append_patch_entry(patch: &mut String, marker: &str, block: &str) {
+    if patch.contains(marker) {
+        return;
+    }
+    if !patch.is_empty() && !patch.ends_with('\n') {
+        patch.push('\n');
+    }
+    patch.push_str(block);
+    if !patch.ends_with('\n') {
+        patch.push('\n');
+    }
+}
+
+/// Ensure the AMS profile overlay is valid YAML and carries the no-login shell defaults.
+fn ensure_profile_base_patch(dsh_home: &PathBuf) -> Result<PathBuf, String> {
+    let profile = dsh_home.join("profiles").join("desktop");
+    fs::create_dir_all(&profile).map_err(|e| format!("创建 profile 失败: {e}"))?;
+    let path = profile.join("cordis.patch.yml");
+    let mut patch = normalize_profile_patch(&fs::read_to_string(&path).unwrap_or_default());
+    append_patch_entry(
+        &mut patch,
+        "id: agent-default-model",
+        "- id: agent-default-model\n  name: '@deepseek-ai/dsh-agent-default-model'\n  config:\n    provider: deepseek-official\n    model: deepseek-flash\n    reasoningEffort: high\n",
+    );
+    append_patch_entry(
+        &mut patch,
+        "id: ui-settings-account",
+        "- id: ui-settings-account\n  disabled: true\n  name: '@deepseek-ai/dsh-client-ui-settings-account'\n  config:\n    version: 1\n    step: done\n    purpose: null\n    process: standard\n    completion: skipped\n    usage: compact\n    developerTools: false\n",
+    );
+    append_patch_entry(
+        &mut patch,
+        "id: ui-settings\n",
+        "- id: ui-settings\n  name: '@deepseek-ai/dsh-client-ui-settings'\n  config:\n    enabled: false\n",
+    );
+    append_patch_entry(
+        &mut patch,
+        "id: llm-deepseek-account",
+        "- id: llm-deepseek-account\n  disabled: true\n",
+    );
+    fs::write(&path, patch).map_err(|e| format!("写入 profile patch 失败: {e}"))?;
+    Ok(path)
+}
+
+/// Remove one top-level patch entry by id, preserving the rest of the overlay.
+fn remove_patch_entry(input: &str, id: &str) -> String {
+    let lines: Vec<&str> = input.lines().collect();
+    let mut output: Vec<&str> = Vec::new();
+    let mut skipping = false;
+    for line in lines {
+        if line.trim_start().starts_with("- id: ") && line.contains(id) {
+            skipping = true;
+            continue;
+        }
+        if skipping && line.trim_start().starts_with("- ") {
+            skipping = false;
+        }
+        if !skipping {
+            output.push(line);
+        }
+    }
+    output.join("\n")
+}
+
 /// Write the two-user-input connection into the AMS Kernel profile and credential store.
 fn apply_connection_config(config: &ConnectionConfig) -> Result<(), String> {
     let base_url = config.base_url.trim();
@@ -391,23 +464,14 @@ fn apply_connection_config(config: &ConnectionConfig) -> Result<(), String> {
         return Err("网址和 Key 都不能为空".to_string());
     }
     let dsh_home = ams_home().join("kernel").join("dsh");
-    let profile = dsh_home.join("profiles").join("desktop");
-    fs::create_dir_all(&profile).map_err(|e| format!("创建 profile 失败: {e}"))?;
-    let credentials = format!("version: 1\nrefs:\n  AMS_API_KEY: {}\n", yaml_quote(api_key));
+    let patch_path = ensure_profile_base_patch(&dsh_home)?;
+    let credentials = format!("version: 1\nrefs:\n  AMS_API_KEY: {}\n  DEEPSEEK_API_KEY: {}\n", yaml_quote(api_key), yaml_quote(api_key));
     fs::write(dsh_home.join(".credentials.yaml"), credentials).map_err(|e| format!("写入凭据失败: {e}"))?;
-    let patch_path = profile.join("cordis.patch.yml");
-    let mut patch = fs::read_to_string(&patch_path).unwrap_or_default();
-    let block = format!("- id: llm-deepseek-ams\n  name: '@deepseek-ai/dsh-llm-deepseek-api-key'\n  config:\n    baseURL: {}\n    apiKeyEnv: AMS_API_KEY\n", yaml_quote(base_url));
-    if patch.contains("id: llm-deepseek-ams") {
-        if let Some(start) = patch.find("- id: llm-deepseek-ams") {
-            let tail = &patch[start..];
-            let end = tail[1..].find("\n- ").map(|i| start + 1 + i).unwrap_or(patch.len());
-            patch.replace_range(start..end, block.trim_end());
-        }
-    } else {
-        if !patch.is_empty() && !patch.ends_with('\n') { patch.push('\n'); }
-        patch.push_str(&block);
-    }
+    let mut patch = normalize_profile_patch(&fs::read_to_string(&patch_path).unwrap_or_default());
+    patch = remove_patch_entry(&patch, "llm-deepseek-ams");
+    patch = remove_patch_entry(&patch, "llm-deepseek");
+    if !patch.is_empty() && !patch.ends_with('\n') { patch.push('\n'); }
+    patch.push_str(&format!("- id: llm-deepseek\n  name: '@deepseek-ai/dsh-llm-deepseek-api-key'\n  config:\n    baseURL: {}\n    apiKeyEnv: DEEPSEEK_API_KEY\n", yaml_quote(base_url)));
     fs::write(&patch_path, patch).map_err(|e| format!("写入 profile patch 失败: {e}"))?;
     Ok(())
 }
@@ -1000,6 +1064,7 @@ fn start_kernel() -> Result<String, String> {
     }
     let dsh_home = ams_home().join("kernel").join("dsh");
     fs::create_dir_all(&dsh_home).map_err(|e| format!("创建 DSH_HOME 失败: {e}"))?;
+    ensure_profile_base_patch(&dsh_home)?;
     fs::create_dir_all(runtime_dir()).map_err(|e| format!("创建 runtime 失败: {e}"))?;
     let log = fs::File::create(kernel_log_path()).map_err(|e| format!("创建日志失败: {e}"))?;
     let log_err = log.try_clone().map_err(|e| format!("复制日志句柄失败: {e}"))?;
@@ -1416,6 +1481,83 @@ async fn install_components(ids: Option<Vec<String>>) -> Result<Vec<ComponentRes
 }
 
 #[tauri::command]
+fn install_music_plugins() -> Result<String, String> {
+    let home = ams_home();
+    let dsh_home = home.join("kernel").join("dsh");
+    let profile = dsh_home.join("profiles").join("desktop");
+    if !profile.is_dir() {
+        return Err("内核 profile 尚未初始化：请先启动一次 AMS Kernel，再停止后安装插件".to_string());
+    }
+    let status = kernel_status();
+    if status.pid > 0 && process_alive(status.pid) {
+        return Err("请先停止 AMS Kernel，再安装音乐插件".to_string());
+    }
+    let dsh_cmd = home
+        .join("kernel")
+        .join("resources")
+        .join("runtime")
+        .join("cli")
+        .join("bin")
+        .join("dsh.cmd");
+    if !dsh_cmd.is_file() {
+        return Err(format!("找不到 DSH CLI：{}", dsh_cmd.display()));
+    }
+    // The packaged CLI launcher must target AMS Kernel.exe, not upstream.
+    if let Ok(text) = fs::read_to_string(&dsh_cmd) {
+        if text.contains("DeepSeek Harness.exe") {
+            let _ = fs::write(&dsh_cmd, text.replace("DeepSeek Harness.exe", "AMS Kernel.exe"));
+        }
+    }
+    let plugin_dir = home.join("components").join("plugin.ams.music.bundle");
+    let tarballs = [
+        "ams-plugin-core-0.3.0.tgz",
+        "ams-plugin-ui-0.3.0.tgz",
+        "ams-music-bundle-0.3.0.tgz",
+    ];
+    for name in tarballs {
+        if !plugin_dir.join(name).is_file() {
+            return Err(format!("插件组件不完整，缺少：{}", plugin_dir.join(name).display()));
+        }
+    }
+    for name in tarballs {
+        let tarball = plugin_dir.join(name);
+        let mut command = hidden_command("cmd.exe");
+        command
+            .current_dir(&home)
+            .arg("/c")
+            .arg(&dsh_cmd)
+            .args(["plugin", "--profile", "desktop", "add"])
+            .arg(&tarball)
+            .env("DSH_HOME", &dsh_home)
+            .env("DSH_PROFILE", "desktop")
+            .env("DSH_PROFILE_DIR", &profile);
+        for (key, _) in env::vars_os() {
+            if let Some(k) = key.to_str() {
+                if k.starts_with("DSH_") || k.starts_with("AMS_") {
+                    command.env_remove(k);
+                }
+            }
+        }
+        command.env("DSH_HOME", &dsh_home).env("DSH_PROFILE", "desktop").env("DSH_PROFILE_DIR", &profile);
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+        let output = command.output().map_err(|e| format!("调用 DSH plugin 失败: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return Err(format!("安装 {} 失败：{}{}", name, stdout, stderr));
+        }
+    }
+    let modules = profile.join("node_modules").join("@ams");
+    for name in ["plugin-core", "plugin-ui", "music-bundle"] {
+        if !modules.join(name).is_dir() {
+            return Err(format!("插件安装后缺少模块：{}", modules.join(name).display()));
+        }
+    }
+    Ok(format!("音乐插件已安装到 {}；请重启 AMS Kernel", profile.display()))
+}
+
+#[tauri::command]
 fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
@@ -1515,6 +1657,7 @@ pub fn run() {
             verify_update_manifest,
             fetch_components,
             install_components,
+            install_music_plugins,
             app_version,
             open_uninstaller,
             connection_status,
