@@ -55,9 +55,12 @@ const pluginBusy = ref(false);
 const pluginMsg = ref("");
 const uninstallMsg = ref("");
 const connection = ref<ConnectionInfo | null>(null);
-const runtime = ref<{ rvc_python: string; rvc_root: string } | null>(null);
+const runtime = ref<{ rvc_python: string; rvc_root: string; pymss_python: string; pymss_root: string; msvc_tool: string } | null>(null);
 const rvcPython = ref("");
 const rvcRoot = ref("");
+const pymssPython = ref("");
+const pymssRoot = ref("");
+const msvcTool = ref("");
 const runtimeMsg = ref("");
 const runtimeBusy = ref(false);
 const connBase = ref("");
@@ -288,9 +291,12 @@ async function refreshConnection() {
 
 async function refreshRuntime() {
   try {
-    runtime.value = await invoke<{ rvc_python: string; rvc_root: string }>("runtime_status");
+    runtime.value = await invoke<{ rvc_python: string; rvc_root: string; pymss_python: string; pymss_root: string; msvc_tool: string }>("runtime_status");
     if (!rvcPython.value) rvcPython.value = runtime.value.rvc_python;
     if (!rvcRoot.value) rvcRoot.value = runtime.value.rvc_root;
+    if (!pymssPython.value) pymssPython.value = runtime.value.pymss_python;
+    if (!pymssRoot.value) pymssRoot.value = runtime.value.pymss_root;
+    if (!msvcTool.value) msvcTool.value = runtime.value.msvc_tool;
   } catch (e) { runtimeMsg.value = String(e); }
 }
 
@@ -298,7 +304,7 @@ async function saveRuntime() {
   runtimeBusy.value = true;
   runtimeMsg.value = "";
   try {
-    runtimeMsg.value = await invoke<string>("save_runtime", { rvcPython: rvcPython.value, rvcRoot: rvcRoot.value });
+    runtimeMsg.value = await invoke<string>("save_runtime", { rvcPython: rvcPython.value, rvcRoot: rvcRoot.value, pymssPython: pymssPython.value, pymssRoot: pymssRoot.value, msvcTool: msvcTool.value });
     await refreshRuntime();
   } catch (e) { runtimeMsg.value = "保存失败：" + String(e); }
   finally { runtimeBusy.value = false; }
@@ -369,8 +375,11 @@ onUnmounted(() => {
       <div class="card">
         <h2>运行环境路径（只保存到 AMS 安装目录）</h2>
         <ul>
-          <li><span>RVC Python</span><input v-model="rvcPython" placeholder="F:\ai歌曲\RVC20260311\runtime\python.exe" /></li>
-          <li><span>RVC 根目录</span><input v-model="rvcRoot" placeholder="F:\ai歌曲\RVC20260311" /></li>
+          <li><span>RVC Python</span><input v-model="rvcPython" placeholder="data\runtime\rvc\<ver>\runtime\python.exe" /></li>
+          <li><span>RVC 根目录</span><input v-model="rvcRoot" placeholder="data\runtime\rvc\<ver>" /></li>
+          <li><span>pymss Python</span><input v-model="pymssPython" placeholder="data\runtime\pymss\<ver>\.venv\Scripts\python.exe" /></li>
+          <li><span>pymss 根目录</span><input v-model="pymssRoot" placeholder="data\runtime\pymss\<ver>" /></li>
+          <li><span>MSVC 工具</span><input v-model="msvcTool" placeholder="data\tools\msvc2pth\<ver>\msvc2pth.py" /></li>
         </ul>
         <div class="row">
           <button :disabled="runtimeBusy" @click="saveRuntime">{{ runtimeBusy ? "保存中…" : "保存运行环境" }}</button>

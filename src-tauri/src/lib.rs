@@ -116,8 +116,13 @@ fn item(label: &str, value: String, ok: bool) -> EnvItem {
 }
 
 fn run_ps(script: &str) -> String {
+    // PowerShell 5.1 writes GBK/ANSI when stdout is redirected from a windowless
+    // process. Force UTF-8 before the probe so Chinese values are not mojibake.
+    let wrapped = format!(
+        "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $OutputEncoding=[Console]::OutputEncoding; {script}"
+    );
     let output = hidden_command("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .args(["-NoProfile", "-NonInteractive", "-Command", &wrapped])
         .output();
     match output {
         Ok(out) => {
@@ -362,9 +367,13 @@ struct ConnectionConfig {
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 struct RuntimeConfig {
     rvc_python: String,
     rvc_root: String,
+    pymss_python: String,
+    pymss_root: String,
+    msvc_tool: String,
 }
 
 #[derive(Serialize)]
@@ -603,6 +612,17 @@ fn http_get(port: u16, path: &str, token: &str) -> Result<String, String> {
     Ok(body)
 }
 
+fn path_is_inside_ams(path: &PathBuf) -> bool {
+    let Ok(target) = fs::canonicalize(path) else { return false };
+    let Ok(home) = fs::canonicalize(ams_home()) else { return false };
+    target.starts_with(home)
+}
+
+fn bundled_node_path() -> PathBuf {
+    ams_home().join("kernel").join("resources").join("runtime").join("primary-runtime")
+        .join("dependencies").join("node").join("bin").join("node.exe")
+}
+
 #[tauri::command]
 fn get_environment() -> Vec<EnvItem> {
     let mut items: Vec<EnvItem> = Vec::new();
@@ -620,20 +640,48 @@ fn get_environment() -> Vec<EnvItem> {
     } else {
         items.push(item("GPU", first_line(&gpu), true));
     }
-    let python = {
-        let v = run_cmd("py.exe", &["-3", "--version"]);
-        if v.is_empty() { run_cmd("python.exe", &["--version"]) } else { v }
-    };
-    items.push(item("Python", python, true));
-    let node = run_cmd("node.exe", &["-v"]);
-    let node_ok = !node.is_empty();
-    items.push(item("Node.js", if node_ok { node } else { "未安装".to_string() }, node_ok));
-    let ffmpeg = first_line(&run_cmd("ffmpeg.exe", &["-version"]));
-    let ffmpeg_ok = !ffmpeg.is_empty();
-    items.push(item("FFmpeg", if ffmpeg_ok { ffmpeg } else { "未安装".to_string() }, ffmpeg_ok));
+    let node_path = bundled_node_path();
+    let node_version = if node_path.is_file() {
+        run_cmd(&node_path.to_string_lossy(), &["-v"])
+    } else { String::new() };
+    let node_ok = !node_version.is_empty() && path_is_inside_ams(&node_path);
+    items.push(item("内核 Node（内置）", if node_version.is_empty() { "缺失".to_string() } else { node_version }, node_ok));
+    let gateway_exe = gateway_dir().join("ams-gateway.exe");
+    items.push(item(
+        "Gateway Python（内置）",
+        if gateway_exe.is_file() { "已 bundled".to_string() } else { "未安装".to_string() },
+        gateway_exe.is_file() && path_is_inside_ams(&gateway_exe),
+    ));
+    let runtime = read_runtime_config();
+    let rvc_python = PathBuf::from(runtime.rvc_python.trim());
+    let rvc_root = PathBuf::from(runtime.rvc_root.trim());
+    let rvc_ok = rvc_python.is_file() && rvc_root.is_dir() && path_is_inside_ams(&rvc_python) && path_is_inside_ams(&rvc_root);
+    items.push(item(
+        "RVC 运行时（受管）",
+        if rvc_ok { rvc_root.display().to_string() } else if runtime.rvc_root.trim().is_empty() { "未配置；请安装 runtime.rvc".to_string() } else { format!("外部路径，需迁移到 data：{}", runtime.rvc_root) },
+        rvc_ok,
+    ));
+    let ffmpeg_candidates = [
+        ams_home().join("tools").join("ffmpeg").join("bin").join("ffmpeg.exe"),
+        rvc_root.join("ffmpeg.exe"),
+    ];
+    let ffmpeg = ffmpeg_candidates.iter().find(|path| path.is_file());
+    items.push(item(
+        "FFmpeg（受管）",
+        match ffmpeg { Some(path) => path.display().to_string(), None => "缺失；需安装 tool.ffmpeg".to_string() },
+        ffmpeg.map(|path| path_is_inside_ams(path)).unwrap_or(false),
+    ));
+    let voice = ams_home().join("voices").join("曼波").join("曼波.pth");
+    items.push(item("曼波音源（内置资产）", if voice.is_file() { "已安装".to_string() } else { "缺失".to_string() }, voice.is_file()));
+    let python = run_cmd("py.exe", &["-3", "--version"]);
+    let python_ok = !python.is_empty();
+    items.push(item("系统 Python（仅开发，可选）", if python_ok { python } else { "未安装（不影响运行）".to_string() }, python_ok));
+    let system_node = run_cmd("node.exe", &["-v"]);
+    let system_node_ok = !system_node.is_empty();
+    items.push(item("系统 Node（仅开发，可选）", if system_node_ok { system_node } else { "未安装（不影响运行）".to_string() }, system_node_ok));
     let git = run_cmd("git.exe", &["--version"]);
     let git_ok = !git.is_empty();
-    items.push(item("Git", if git_ok { git } else { "未安装".to_string() }, git_ok));
+    items.push(item("Git（开发工具，可选）", if git_ok { git } else { "未安装".to_string() }, git_ok));
     let disk = run_ps("(Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -ne $null } | ForEach-Object { $_.Name + ' ' + [math]::Round($_.Free/1GB) + 'GB' }) -join ' / '");
     items.push(item("磁盘可用", disk, true));
     items.push(item("AMS 数据目录", ams_home().display().to_string(), true));
@@ -707,10 +755,13 @@ fn read_runtime_config() -> RuntimeConfig {
 fn runtime_status() -> RuntimeConfig { read_runtime_config() }
 
 #[tauri::command]
-fn save_runtime(rvc_python: String, rvc_root: String) -> Result<String, String> {
+fn save_runtime(rvc_python: String, rvc_root: String, pymss_python: String, pymss_root: String, msvc_tool: String) -> Result<String, String> {
     let config = RuntimeConfig {
         rvc_python: rvc_python.trim().to_string(),
         rvc_root: rvc_root.trim().to_string(),
+        pymss_python: pymss_python.trim().to_string(),
+        pymss_root: pymss_root.trim().to_string(),
+        msvc_tool: msvc_tool.trim().to_string(),
     };
     let path = runtime_config_path();
     if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?; }
@@ -748,6 +799,9 @@ fn start_gateway() -> Result<String, String> {
     let runtime = read_runtime_config();
     if !runtime.rvc_python.trim().is_empty() { command.env("AMS_RVC_PYTHON", runtime.rvc_python.trim()); }
     if !runtime.rvc_root.trim().is_empty() { command.env("AMS_RVC_ROOT", runtime.rvc_root.trim()); }
+    if !runtime.pymss_python.trim().is_empty() { command.env("AMS_PYMSS_PYTHON", runtime.pymss_python.trim()); }
+    if !runtime.pymss_root.trim().is_empty() { command.env("AMS_PYMSS_ROOT", runtime.pymss_root.trim()); }
+    if !runtime.msvc_tool.trim().is_empty() { command.env("AMS_MSVC_TOOL", runtime.msvc_tool.trim()); }
     // Backend roots are user/environment configuration, never a fixed drive path.
     if let Ok(value) = env::var("AMS_RVC_PYTHON") {
         if !value.trim().is_empty() {
@@ -1479,6 +1533,8 @@ fn install_component_blocking(asset: &ComponentAsset) -> ComponentResult {
         let downloads = ams_home().join("components").join("downloads");
         let target = if asset.kind == "kernel" {
             ams_home().join("kernel")
+        } else if asset.kind == "asset" {
+            ams_home().join("assets").join(&asset.id)
         } else {
             ams_home().join("components").join(&asset.id)
         };
@@ -1493,6 +1549,11 @@ fn install_component_blocking(asset: &ComponentAsset) -> ComponentResult {
             return Err(format!("{} sha256 不匹配：期望 {}，实际 {}", asset.id, asset.sha256, sha));
         }
         let extracted = extract_zip(&zip_path, &target)?;
+        if asset.id == "asset.voicepack.manbo" {
+            let voices = ams_home().join("voices").join("曼波");
+            let voice_message = install_voicepack_dir(&target, &voices)?;
+            return Ok((format!("已下载曼波资产并安装到 voices：{}", voice_message), size));
+        }
         Ok((format!("已安装 {} {}（{} B 下载，{} B 解包）", asset.id, asset.version, size, extracted), size))
     })();
     match result {
