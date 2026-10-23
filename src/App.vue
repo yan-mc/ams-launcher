@@ -37,6 +37,7 @@ const components = ref<ComponentItem[]>([]);
 const voices = ref<VoiceInfo[]>([]);
 const voiceMsg = ref("");
 const voiceBusy = ref(false);
+const voiceSource = ref("");
 const kernel = ref<KernelInfo | null>(null);
 const kernelMsg = ref("");
 const msvc = ref({ input: "", reference: "", out: "", name: "" });
@@ -54,6 +55,11 @@ const pluginBusy = ref(false);
 const pluginMsg = ref("");
 const uninstallMsg = ref("");
 const connection = ref<ConnectionInfo | null>(null);
+const runtime = ref<{ rvc_python: string; rvc_root: string } | null>(null);
+const rvcPython = ref("");
+const rvcRoot = ref("");
+const runtimeMsg = ref("");
+const runtimeBusy = ref(false);
 const connBase = ref("");
 const connKey = ref("");
 const connMsg = ref("");
@@ -121,6 +127,19 @@ async function scanVoices() {
     voiceMsg.value = voices.value.length ? "" : "音源库为空";
   } catch (e) {
     voiceMsg.value = "扫描失败：" + String(e);
+  }
+}
+
+async function installVoiceFromSource() {
+  voiceBusy.value = true;
+  voiceMsg.value = "正在从本地路径安装曼波音源…";
+  try {
+    voiceMsg.value = await invoke<string>("install_default_voice_from", { source: voiceSource.value });
+    await scanVoices();
+  } catch (e) {
+    voiceMsg.value = "安装失败：" + String(e);
+  } finally {
+    voiceBusy.value = false;
   }
 }
 
@@ -267,6 +286,24 @@ async function refreshConnection() {
   } catch (e) { connMsg.value = String(e); }
 }
 
+async function refreshRuntime() {
+  try {
+    runtime.value = await invoke<{ rvc_python: string; rvc_root: string }>("runtime_status");
+    if (!rvcPython.value) rvcPython.value = runtime.value.rvc_python;
+    if (!rvcRoot.value) rvcRoot.value = runtime.value.rvc_root;
+  } catch (e) { runtimeMsg.value = String(e); }
+}
+
+async function saveRuntime() {
+  runtimeBusy.value = true;
+  runtimeMsg.value = "";
+  try {
+    runtimeMsg.value = await invoke<string>("save_runtime", { rvcPython: rvcPython.value, rvcRoot: rvcRoot.value });
+    await refreshRuntime();
+  } catch (e) { runtimeMsg.value = "保存失败：" + String(e); }
+  finally { runtimeBusy.value = false; }
+}
+
 async function saveConnection() {
   connBusy.value = true;
   connMsg.value = "";
@@ -292,7 +329,7 @@ async function installPlugins() {
 }
 
 async function refreshAll() {
-  await Promise.all([refreshEnv(), refreshGateway(), refreshKernel(), refreshConnection()]);
+  await Promise.all([refreshEnv(), refreshGateway(), refreshKernel(), refreshConnection(), refreshRuntime()]);
 }
 
 onMounted(() => {
@@ -327,6 +364,19 @@ onUnmounted(() => {
           <button @click="refreshConnection">刷新</button>
         </div>
         <p v-if="connMsg" class="note">{{ connMsg }}</p>
+      </div>
+
+      <div class="card">
+        <h2>运行环境路径（只保存到 AMS 安装目录）</h2>
+        <ul>
+          <li><span>RVC Python</span><input v-model="rvcPython" placeholder="F:\ai歌曲\RVC20260311\runtime\python.exe" /></li>
+          <li><span>RVC 根目录</span><input v-model="rvcRoot" placeholder="F:\ai歌曲\RVC20260311" /></li>
+        </ul>
+        <div class="row">
+          <button :disabled="runtimeBusy" @click="saveRuntime">{{ runtimeBusy ? "保存中…" : "保存运行环境" }}</button>
+          <button @click="refreshRuntime">刷新</button>
+        </div>
+        <p v-if="runtimeMsg" class="note">{{ runtimeMsg }}</p>
       </div>
 
       <div class="card">
@@ -455,7 +505,11 @@ onUnmounted(() => {
           <button :disabled="voiceBusy" @click="scanVoices">扫描音源</button>
           <button :disabled="voiceBusy" @click="installDefaultVoice">安装默认曼波</button>
         </div>
-        <p class="note">默认音源从 AMS_DEFAULT_VOICE_PACK 或 AMS_DEFAULT_VOICE_DIR 复制到 AMS_HOME/voices/曼波/，不进 Git/安装包。</p>
+        <div class="row">
+          <input v-model="voiceSource" class="wide-input" placeholder="本地曼波目录或 voicepack.zip 路径" />
+          <button :disabled="voiceBusy || !voiceSource" @click="installVoiceFromSource">从本地路径安装</button>
+        </div>
+        <p class="note">默认音源从本地目录/voicepack 复制到 AMS_HOME/voices/曼波/，不进 Git/安装包；不再依赖环境变量。</p>
       </div>
 
       <div class="card wide">

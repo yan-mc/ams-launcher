@@ -361,6 +361,12 @@ struct ConnectionConfig {
     api_key: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct RuntimeConfig {
+    rvc_python: String,
+    rvc_root: String,
+}
+
 #[derive(Serialize)]
 struct ConnectionInfo {
     base_url: String,
@@ -686,6 +692,33 @@ fn gateway_status() -> GatewayInfo {
     info
 }
 
+fn runtime_config_path() -> PathBuf {
+    ams_home().join("config").join("runtime.json")
+}
+
+fn read_runtime_config() -> RuntimeConfig {
+    fs::read_to_string(runtime_config_path())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn runtime_status() -> RuntimeConfig { read_runtime_config() }
+
+#[tauri::command]
+fn save_runtime(rvc_python: String, rvc_root: String) -> Result<String, String> {
+    let config = RuntimeConfig {
+        rvc_python: rvc_python.trim().to_string(),
+        rvc_root: rvc_root.trim().to_string(),
+    };
+    let path = runtime_config_path();
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?; }
+    fs::write(&path, serde_json::to_string_pretty(&config).map_err(|e| format!("序列化运行环境失败: {e}"))?)
+        .map_err(|e| format!("保存运行环境失败: {e}"))?;
+    Ok(format!("运行环境已保存到 {}；请重启 Gateway 后重新扫描音源", path.display()))
+}
+
 #[tauri::command]
 fn start_gateway() -> Result<String, String> {
     let gdir = gateway_dir();
@@ -712,6 +745,9 @@ fn start_gateway() -> Result<String, String> {
         c
     };
     command.env("AMS_HOME", &home);
+    let runtime = read_runtime_config();
+    if !runtime.rvc_python.trim().is_empty() { command.env("AMS_RVC_PYTHON", runtime.rvc_python.trim()); }
+    if !runtime.rvc_root.trim().is_empty() { command.env("AMS_RVC_ROOT", runtime.rvc_root.trim()); }
     // Backend roots are user/environment configuration, never a fixed drive path.
     if let Ok(value) = env::var("AMS_RVC_PYTHON") {
         if !value.trim().is_empty() {
@@ -850,10 +886,17 @@ fn install_voicepack_zip(pack: &PathBuf, target_dir: &PathBuf) -> Result<String,
 }
 
 fn install_voicepack_dir(source_dir: &PathBuf, target_dir: &PathBuf) -> Result<String, String> {
-    let pth = source_dir.join("manbo.pth");
-    if !pth.is_file() {
-        return Err(format!("默认音源文件不存在：{}（可用 AMS_DEFAULT_VOICE_PACK 指定 voicepack.zip）", pth.display()));
-    }
+    let find_file = |exts: &[&str]| -> Option<PathBuf> {
+        let entries = fs::read_dir(source_dir).ok()?;
+        let mut candidates: Vec<PathBuf> = entries.flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file() && path.extension().and_then(|value| value.to_str()).map(|ext| exts.contains(&ext)).unwrap_or(false))
+            .collect();
+        candidates.sort();
+        candidates.into_iter().next()
+    };
+    let pth = find_file(&["pth"])
+        .ok_or_else(|| format!("默认音源目录中没有 .pth：{}", source_dir.display()))?;
     fs::create_dir_all(target_dir).map_err(|e| format!("创建音源目录失败: {e}"))?;
     let target_pth = target_dir.join("曼波.pth");
     if target_pth.is_file() {
@@ -861,13 +904,32 @@ fn install_voicepack_dir(source_dir: &PathBuf, target_dir: &PathBuf) -> Result<S
     }
     fs::copy(&pth, &target_pth).map_err(|e| format!("复制 pth 失败: {e}"))?;
     let mut message = format!("已安装默认音源曼波（pth {:.1} MB）", fs::metadata(&target_pth).map(|m| m.len()).unwrap_or(0) as f64 / (1024.0 * 1024.0));
-    let index = source_dir.join("manbo.index");
-    if index.is_file() {
+    if let Some(index) = find_file(&["index"]) {
         let target_index = target_dir.join("曼波.index");
         fs::copy(&index, &target_index).map_err(|e| format!("复制 index 失败: {e}"))?;
         message.push_str(&format!("，index {:.1} MB", fs::metadata(&target_index).map(|m| m.len()).unwrap_or(0) as f64 / (1024.0 * 1024.0)));
     }
     Ok(message + "；可在 Gateway 启动后扫描")
+}
+
+#[tauri::command]
+fn install_default_voice_from(source: String) -> Result<String, String> {
+    let source = source.trim().to_string();
+    if source.is_empty() {
+        return Err("请先选择 voicepack.zip 或曼波目录".to_string());
+    }
+    let source_path = PathBuf::from(&source);
+    let target_dir = ams_home().join("voices").join("曼波");
+    if target_dir.join("曼波.pth").is_file() {
+        return Ok(format!("默认音源已存在：{}", target_dir.join("曼波.pth").display()));
+    }
+    if source_path.is_file() {
+        install_voicepack_zip(&source_path, &target_dir)
+    } else if source_path.is_dir() {
+        install_voicepack_dir(&source_path, &target_dir)
+    } else {
+        Err(format!("音源路径不存在：{}", source))
+    }
 }
 
 #[tauri::command]
@@ -1648,6 +1710,9 @@ pub fn run() {
             component_status,
             scan_voices,
             install_default_voice,
+            install_default_voice_from,
+            runtime_status,
+            save_runtime,
             kernel_status,
             start_kernel,
             stop_kernel,
