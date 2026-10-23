@@ -170,8 +170,12 @@ fn ams_home() -> PathBuf {
             return PathBuf::from(value);
         }
     }
-    let local = env::var("LOCALAPPDATA").unwrap_or_default();
-    PathBuf::from(local).join("AMS")
+    // Never fall back to %LOCALAPPDATA%: all AMS state belongs under the install root.
+    // A standalone dev binary uses <exe-dir>\data so it cannot leak into C:.
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("data")))
+        .unwrap_or_else(|| PathBuf::from("data"))
 }
 
 
@@ -240,9 +244,7 @@ fn owned_ams_home() -> Result<PathBuf, String> {
         return Err(format!("拒绝清理：AMS_HOME 是符号链接/目录联接：{}", home.display()));
     }
     let canonical = fs::canonicalize(&home).map_err(|e| format!("解析 AMS_HOME 失败: {e}"))?;
-    let default_home = installed_data_dir()
-        .or_else(|| env::var("LOCALAPPDATA").ok().map(|local| PathBuf::from(local).join("AMS")))
-        .and_then(|p| fs::canonicalize(p).ok());
+    let default_home = installed_data_dir().and_then(|p| fs::canonicalize(p).ok());
     let is_default = default_home
         .map(|p| canonical_lower(&p) == canonical_lower(&canonical))
         .unwrap_or(false);
@@ -796,6 +798,9 @@ fn start_gateway() -> Result<String, String> {
         c
     };
     command.env("AMS_HOME", &home);
+    let temp = home.join("tmp");
+    let _ = fs::create_dir_all(&temp);
+    command.env("TEMP", &temp).env("TMP", &temp);
     let runtime = read_runtime_config();
     if !runtime.rvc_python.trim().is_empty() { command.env("AMS_RVC_PYTHON", runtime.rvc_python.trim()); }
     if !runtime.rvc_root.trim().is_empty() { command.env("AMS_RVC_ROOT", runtime.rvc_root.trim()); }
@@ -1209,6 +1214,9 @@ fn start_kernel() -> Result<String, String> {
             }
         }
         command.env("DSH_HOME", &dsh_home);
+        let temp = ams_home().join("tmp");
+        let _ = fs::create_dir_all(&temp);
+        command.env("TEMP", &temp).env("TMP", &temp);
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
         let child = command.spawn().map_err(|e| format!("启动打包内核失败: {e}"))?;
@@ -1661,7 +1669,9 @@ fn install_music_plugins() -> Result<String, String> {
                 }
             }
         }
-        command.env("DSH_HOME", &dsh_home).env("DSH_PROFILE", "desktop").env("DSH_PROFILE_DIR", &profile);
+        let temp = ams_home().join("tmp");
+        let _ = fs::create_dir_all(&temp);
+        command.env("DSH_HOME", &dsh_home).env("DSH_PROFILE", "desktop").env("DSH_PROFILE_DIR", &profile).env("TEMP", &temp).env("TMP", &temp);
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
         let output = command.output().map_err(|e| format!("调用 DSH plugin 失败: {e}"))?;
@@ -1721,8 +1731,24 @@ fn cli_install_components() -> Result<(), String> {
     }
 }
 
+fn configure_process_storage() {
+    let home = ams_home();
+    let temp = home.join("tmp");
+    let appdirs = home.join("runtime").join("appdirs");
+    let _ = fs::create_dir_all(&temp);
+    let _ = fs::create_dir_all(&appdirs);
+    // Process-local only; no persistent user/machine environment is changed.
+    #[cfg(windows)]
+    unsafe {
+        env::set_var("TEMP", &temp);
+        env::set_var("TMP", &temp);
+        env::set_var("WEBVIEW2_USER_DATA_FOLDER", &appdirs);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    configure_process_storage();
     let args: Vec<String> = env::args().collect();
     if args.iter().any(|arg| arg == "--uninstall-cleanup") {
         let result = cleanup_ams_data();
@@ -1760,6 +1786,12 @@ pub fn run() {
         };
         std::process::exit(code);
     }
+    let mut context = tauri::generate_context!();
+    context.config_mut().app.app_directories_override = Some(
+        tauri::utils::config::AppDirectoriesOverride::Root(
+            ams_home().join("runtime").join("appdirs")
+        )
+    );
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1789,7 +1821,7 @@ pub fn run() {
             connection_status,
             save_connection
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }
 
