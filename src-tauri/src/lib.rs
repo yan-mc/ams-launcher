@@ -816,6 +816,23 @@ fn start_gateway() -> Result<String, String> {
     if !runtime.rvc_root.trim().is_empty() { command.env("AMS_RVC_ROOT", runtime.rvc_root.trim()); }
     if !runtime.pymss_python.trim().is_empty() { command.env("AMS_PYMSS_PYTHON", runtime.pymss_python.trim()); }
     if !runtime.pymss_root.trim().is_empty() { command.env("AMS_PYMSS_ROOT", runtime.pymss_root.trim()); }
+    let vcrun = ams_home().join("tools").join("vcrun").join("0.1.0");
+    if vcrun.is_dir() {
+        let old_path = env::var("PATH").unwrap_or_default();
+        command.env("PATH", format!("{};{}", vcrun.display(), old_path));
+    }
+    let pymss_base = PathBuf::from(runtime.pymss_python.trim());
+    if pymss_base.file_name().and_then(|v| v.to_str()) == Some("python.exe") {
+        if pymss_base.parent().and_then(|p| p.file_name()).and_then(|v| v.to_str()) == Some("python") {
+            if let Some(root) = pymss_base.parent().and_then(|p| p.parent()) {
+                let site = root.join(".venv").join("Lib").join("site-packages");
+                if site.is_dir() {
+                    command.env("PYTHONHOME", pymss_base.parent().unwrap_or(&pymss_base));
+                    command.env("PYTHONPATH", site);
+                }
+            }
+        }
+    }
     if !runtime.msvc_tool.trim().is_empty() { command.env("AMS_MSVC_TOOL", runtime.msvc_tool.trim()); }
     // Backend roots are user/environment configuration, never a fixed drive path.
     if let Ok(value) = env::var("AMS_RVC_PYTHON") {
@@ -1620,6 +1637,11 @@ fn apply_runtime_component_config(asset: &ComponentAsset, target: &PathBuf) -> R
         "runtime.pymss" => {
             config.pymss_root = target.display().to_string();
             config.pymss_python = target.join(".venv").join("Scripts").join("python.exe").display().to_string();
+            true
+        }
+        "runtime.pymss.python" => {
+            config.pymss_root = target.parent().map(|p| p.display().to_string()).unwrap_or_default();
+            config.pymss_python = target.join("python.exe").display().to_string();
             true
         }
         "tool.msvc" | "tool.msvc2pth" => {
