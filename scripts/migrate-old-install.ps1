@@ -1,4 +1,4 @@
-# 在旧版 AMS（0.1.5）升级前执行：备份并移除旧卸载项，让新安装器走全新安装，不运行旧卸载器、不清理 data。
+﻿# Legacy AMS (0.1.5) migration helper: back up/remove the old uninstaller so the new setup does a clean install without deleting data.
 param(
     [Parameter(Mandatory=$true)][string]$Setup,
     [Parameter(Mandatory=$true)][string]$InstallDir
