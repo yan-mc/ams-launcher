@@ -642,6 +642,12 @@ fn get_environment() -> Vec<EnvItem> {
     } else {
         items.push(item("GPU", first_line(&gpu), true));
     }
+    let webview = run_ps("$p='HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'; if(Test-Path $p){ (Get-ItemProperty $p).pv } else { '未安装' }");
+    let webview_ok = !webview.is_empty() && !webview.contains("未安装");
+    items.push(item("WebView2（系统组件）", if webview.is_empty() { "未检测到".to_string() } else { webview }, webview_ok));
+    let vc = run_ps("$p=Join-Path $env:SystemRoot 'System32\\vcruntime140.dll'; if(Test-Path $p){ (Get-Item $p).VersionInfo.FileVersion } else { '缺失' }");
+    let vc_ok = !vc.is_empty() && !vc.contains("缺失");
+    items.push(item("VC++ 运行库", if vc.is_empty() { "未检测到".to_string() } else { vc }, vc_ok));
     let node_path = bundled_node_path();
     let node_version = if node_path.is_file() {
         run_cmd(&node_path.to_string_lossy(), &["-v"])
@@ -801,6 +807,10 @@ fn start_gateway() -> Result<String, String> {
     let temp = home.join("tmp");
     let _ = fs::create_dir_all(&temp);
     command.env("TEMP", &temp).env("TMP", &temp);
+    let tts_root = home.join("runtime").join("tts").join("0.1.0");
+    if tts_root.join("piper").join("piper.exe").is_file() {
+        command.env("AMS_TTS_ROOT", &tts_root);
+    }
     let runtime = read_runtime_config();
     if !runtime.rvc_python.trim().is_empty() { command.env("AMS_RVC_PYTHON", runtime.rvc_python.trim()); }
     if !runtime.rvc_root.trim().is_empty() { command.env("AMS_RVC_ROOT", runtime.rvc_root.trim()); }
@@ -1402,6 +1412,13 @@ const COMPONENT_MANIFEST_URL: &str =
 const UPDATES_PUBLIC_KEY: &str = include_str!("../keys/updates-public.pem");
 
 #[derive(Serialize, Clone)]
+struct ComponentPart {
+    url: String,
+    size: u64,
+    sha256: String,
+}
+
+#[derive(Serialize, Clone)]
 struct ComponentAsset {
     id: String,
     kind: String,
@@ -1409,6 +1426,8 @@ struct ComponentAsset {
     url: String,
     size: u64,
     sha256: String,
+    target: Option<String>,
+    parts: Vec<ComponentPart>,
 }
 
 #[derive(Serialize, Clone)]
@@ -1473,8 +1492,16 @@ fn component_assets(value: &serde_json::Value) -> Vec<ComponentAsset> {
                     url: item.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                     size: item.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
                     sha256: item.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    target: item.get("target").and_then(|v| v.as_str()).map(|v| v.to_string()),
+                    parts: item.get("parts").and_then(|v| v.as_array()).map(|parts| {
+                        parts.iter().map(|part| ComponentPart {
+                            url: part.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            size: part.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+                            sha256: part.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        }).filter(|part| !part.url.is_empty()).collect()
+                    }).unwrap_or_default(),
                 })
-                .filter(|item| !item.id.is_empty() && !item.url.is_empty())
+                .filter(|item| !item.id.is_empty() && (!item.url.is_empty() || !item.parts.is_empty()))
                 .collect()
         })
         .unwrap_or_default()
@@ -1536,19 +1563,93 @@ fn download_asset_to(asset: &ComponentAsset, dest: &PathBuf) -> Result<u64, Stri
     Ok(fs::metadata(dest).map(|m| m.len()).unwrap_or(0))
 }
 
+fn download_parts_to(asset: &ComponentAsset, downloads: &PathBuf) -> Result<PathBuf, String> {
+    let zip_path = downloads.join(format!("{}-{}.zip", asset.id, asset.version));
+    let mut out = File::create(&zip_path).map_err(|e| format!("创建分卷目标文件失败: {e}"))?;
+    for (index, part) in asset.parts.iter().enumerate() {
+        let part_path = downloads.join(format!("{}-{}-part-{}.bin", asset.id, asset.version, index + 1));
+        let part_asset = ComponentAsset {
+            id: format!("{}.part{}", asset.id, index + 1),
+            kind: "part".to_string(),
+            version: asset.version.clone(),
+            url: part.url.clone(),
+            size: part.size,
+            sha256: part.sha256.clone(),
+            target: None,
+            parts: Vec::new(),
+        };
+        let size = download_asset_to(&part_asset, &part_path)?;
+        if part.size > 0 && size != part.size {
+            return Err(format!("{} 第 {} 卷大小不匹配：期望 {}，实际 {}", asset.id, index + 1, part.size, size));
+        }
+        let sha = sha256_of(&part_path)?;
+        if !part.sha256.is_empty() && !sha.eq_ignore_ascii_case(&part.sha256) {
+            return Err(format!("{} 第 {} 卷 sha256 不匹配", asset.id, index + 1));
+        }
+        let mut input = File::open(&part_path).map_err(|e| format!("打开分卷失败: {e}"))?;
+        copy(&mut input, &mut out).map_err(|e| format!("合并分卷失败: {e}"))?;
+    }
+    Ok(zip_path)
+}
+
+fn component_target(asset: &ComponentAsset) -> Result<PathBuf, String> {
+    if let Some(target) = &asset.target {
+        let normalized = target.replace('\\', "/");
+        if normalized.starts_with('/') || normalized.split('/').any(|part| part == ".." || part.is_empty()) {
+            return Err(format!("组件 target 非法：{target}"));
+        }
+        return Ok(ams_home().join(target));
+    }
+    Ok(if asset.kind == "kernel" {
+        ams_home().join("kernel")
+    } else if asset.kind == "asset" {
+        ams_home().join("assets").join(&asset.id)
+    } else {
+        ams_home().join("components").join(&asset.id)
+    })
+}
+
+fn apply_runtime_component_config(asset: &ComponentAsset, target: &PathBuf) -> Result<(), String> {
+    let mut config = read_runtime_config();
+    let changed = match asset.id.as_str() {
+        "runtime.rvc" => {
+            config.rvc_root = target.display().to_string();
+            config.rvc_python = target.join("runtime").join("python.exe").display().to_string();
+            true
+        }
+        "runtime.pymss" => {
+            config.pymss_root = target.display().to_string();
+            config.pymss_python = target.join(".venv").join("Scripts").join("python.exe").display().to_string();
+            true
+        }
+        "tool.msvc" | "tool.msvc2pth" => {
+            config.msvc_tool = target.join("msvc2pth.py").display().to_string();
+            true
+        }
+        _ => false,
+    };
+    if !changed { return Ok(()); }
+    let path = runtime_config_path();
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| format!("创建运行环境配置目录失败: {e}"))?; }
+    fs::write(&path, serde_json::to_string_pretty(&config).map_err(|e| format!("序列化运行环境失败: {e}"))?)
+        .map_err(|e| format!("保存运行环境失败: {e}"))?;
+    Ok(())
+}
 fn install_component_blocking(asset: &ComponentAsset) -> ComponentResult {
     let result = (|| -> Result<(String, u64), String> {
         let downloads = ams_home().join("components").join("downloads");
-        let target = if asset.kind == "kernel" {
-            ams_home().join("kernel")
-        } else if asset.kind == "asset" {
-            ams_home().join("assets").join(&asset.id)
-        } else {
-            ams_home().join("components").join(&asset.id)
-        };
+        let target = component_target(asset)?;
         fs::create_dir_all(&downloads).map_err(|e| format!("创建下载目录失败: {e}"))?;
-        let zip_path = downloads.join(format!("{}-{}.zip", asset.id, asset.version));
-        let size = download_asset_to(asset, &zip_path)?;
+        let zip_path = if asset.parts.is_empty() {
+            let path = downloads.join(format!("{}-{}.zip", asset.id, asset.version));
+            let size = download_asset_to(asset, &path)?;
+            (path, size)
+        } else {
+            let path = download_parts_to(asset, &downloads)?;
+            let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            (path, size)
+        };
+        let (zip_path, size) = zip_path;
         if asset.size > 0 && size != asset.size {
             return Err(format!("{} 大小不匹配：期望 {}，实际 {}", asset.id, asset.size, size));
         }
@@ -1557,6 +1658,7 @@ fn install_component_blocking(asset: &ComponentAsset) -> ComponentResult {
             return Err(format!("{} sha256 不匹配：期望 {}，实际 {}", asset.id, asset.sha256, sha));
         }
         let extracted = extract_zip(&zip_path, &target)?;
+        apply_runtime_component_config(asset, &target)?;
         if asset.id == "asset.voicepack.manbo" {
             let voices = ams_home().join("voices").join("曼波");
             let voice_message = install_voicepack_dir(&target, &voices)?;
@@ -1569,7 +1671,7 @@ fn install_component_blocking(asset: &ComponentAsset) -> ComponentResult {
             id: asset.id.clone(),
             ok: true,
             message,
-            path: ams_home().join("components").join(&asset.id).display().to_string(),
+            path: component_target(asset).map(|p| p.display().to_string()).unwrap_or_default(),
             size,
         },
         Err(message) => ComponentResult {
