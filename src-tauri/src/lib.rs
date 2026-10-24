@@ -321,11 +321,12 @@ fn data_folder_path(kind: &str) -> Result<PathBuf, String> {
 #[tauri::command]
 fn open_data_folder(kind: String) -> Result<String, String> {
     let path = data_folder_path(&kind)?;
-    hidden_command("explorer.exe")
+    // Explorer is a GUI process; do not attach CREATE_NO_WINDOW here.
+    Command::new("explorer.exe")
         .arg(&path)
         .spawn()
         .map_err(|e| format!("打开目录失败: {e}"))?;
-    Ok("已打开数据目录".to_string())
+    Ok(path.display().to_string())
 }
 
 
