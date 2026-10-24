@@ -10,7 +10,7 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -206,6 +206,35 @@ fn ams_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("data"))
 }
 
+
+/// Route every child-process temp/cache location into <AMS_HOME>.  These
+/// variables cover Python tempfile, PyTorch, HuggingFace, Matplotlib, Numba,
+/// pip, and CUDA JIT caches; the runtime data must never leak into a user
+/// profile or another drive.
+fn apply_data_cache_env(command: &mut Command, home: &Path) {
+    let temp = home.join("tmp");
+    let cache = home.join("cache");
+    let dirs = [
+        ("TEMP", temp.clone()),
+        ("TMP", temp.clone()),
+        ("TMPDIR", temp.clone()),
+        ("TORCH_HOME", cache.join("torch")),
+        ("TORCH_EXTENSIONS_DIR", cache.join("torch-extensions")),
+        ("HF_HOME", cache.join("huggingface")),
+        ("HUGGINGFACE_HUB_CACHE", cache.join("huggingface").join("hub")),
+        ("TRANSFORMERS_CACHE", cache.join("huggingface").join("transformers")),
+        ("XDG_CACHE_HOME", cache.clone()),
+        ("MPLCONFIGDIR", cache.join("matplotlib")),
+        ("NUMBA_CACHE_DIR", cache.join("numba")),
+        ("PYTHONPYCACHEPREFIX", cache.join("pycache")),
+        ("PIP_CACHE_DIR", cache.join("pip")),
+        ("CUDA_CACHE_PATH", cache.join("cuda")),
+    ];
+    for (key, path) in dirs {
+        let _ = fs::create_dir_all(&path);
+        command.env(key, path);
+    }
+}
 
 fn ams_home_marker_path() -> PathBuf {
     ams_home().join(".ams-home.json")
@@ -931,9 +960,7 @@ fn start_gateway() -> Result<String, String> {
         c
     };
     command.env("AMS_HOME", &home);
-    let temp = home.join("tmp");
-    let _ = fs::create_dir_all(&temp);
-    command.env("TEMP", &temp).env("TMP", &temp);
+    apply_data_cache_env(&mut command, &home);
     let tts_root = home.join("runtime").join("tts").join("0.1.0");
     if tts_root.join("piper").join("piper.exe").is_file() {
         command.env("AMS_TTS_ROOT", &tts_root);
@@ -1365,9 +1392,7 @@ fn start_kernel() -> Result<String, String> {
             }
         }
         command.env("DSH_HOME", &dsh_home);
-        let temp = ams_home().join("tmp");
-        let _ = fs::create_dir_all(&temp);
-        command.env("TEMP", &temp).env("TMP", &temp);
+        apply_data_cache_env(&mut command, &ams_home());
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
         let child = command.spawn().map_err(|e| format!("启动打包内核失败: {e}"))?;
@@ -1954,9 +1979,8 @@ fn install_music_plugins() -> Result<String, String> {
                 }
             }
         }
-        let temp = ams_home().join("tmp");
-        let _ = fs::create_dir_all(&temp);
-        command.env("DSH_HOME", &dsh_home).env("DSH_PROFILE", "desktop").env("DSH_PROFILE_DIR", &profile).env("TEMP", &temp).env("TMP", &temp);
+        command.env("DSH_HOME", &dsh_home).env("DSH_PROFILE", "desktop").env("DSH_PROFILE_DIR", &profile);
+        apply_data_cache_env(&mut command, &ams_home());
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
         let output = command.output().map_err(|e| format!("调用 DSH plugin 失败: {e}"))?;
