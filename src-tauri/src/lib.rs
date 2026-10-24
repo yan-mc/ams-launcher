@@ -231,6 +231,104 @@ fn ensure_ams_home_marker() -> Result<(), String> {
         .map_err(|e| format!("写入 AMS_HOME 归属标记失败: {e}"))
 }
 
+const DATA_LAYOUT_DIRS: &[&str] = &[
+    "artifacts",
+    "assets",
+    "backups",
+    "cache",
+    "components",
+    "config",
+    "datasets",
+    "kernel",
+    "logs",
+    "models",
+    "projects",
+    "projects/imports",
+    "recordings/vc",
+    "runtime",
+    "tmp",
+    "tools",
+    "tts_voices",
+    "voices",
+];
+
+/// Create the managed data layout once at launcher start. This is additive:
+/// existing user files are never removed, and every path stays under data/.
+fn ensure_data_layout() {
+    let home = ams_home();
+    for name in DATA_LAYOUT_DIRS {
+        let _ = fs::create_dir_all(home.join(name));
+    }
+    seed_tts_voices(&home);
+}
+
+/// Copy the bundled Piper model into data/tts_voices only when the user folder
+/// is empty. The runtime copy remains the fallback; the data copy is editable.
+fn seed_tts_voices(home: &PathBuf) {
+    let src = home.join("runtime").join("tts").join("0.1.0").join("models");
+    let dst_root = home.join("tts_voices");
+    if !src.is_dir() {
+        return;
+    }
+    let has_user_models = fs::read_dir(&dst_root)
+        .map(|entries| entries.filter_map(|entry| entry.ok()).any(|entry| entry.path().extension().and_then(|v| v.to_str()) == Some("onnx") || entry.path().is_dir()))
+        .unwrap_or(false);
+    if has_user_models {
+        return;
+    }
+    let _ = fs::create_dir_all(&dst_root);
+    if let Ok(entries) = fs::read_dir(&src) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|v| v.to_str()) != Some("onnx") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|v| v.to_str()) else { continue };
+            let model_dir = dst_root.join(stem);
+            if fs::create_dir_all(&model_dir).is_err() { continue; }
+            let Some(file_name) = path.file_name() else { continue };
+            let _ = fs::copy(&path, model_dir.join(file_name));
+            let config = path.with_extension("onnx.json");
+            if config.is_file() {
+                if let Some(config_name) = config.file_name() {
+                    let _ = fs::copy(&config, model_dir.join(config_name));
+                }
+            }
+        }
+    }
+}
+
+fn data_folder_path(kind: &str) -> Result<PathBuf, String> {
+    let home = ams_home();
+    let path = match kind {
+        "rvc_voices" => home.join("voices"),
+        "tts_voices" => home.join("tts_voices"),
+        "artifacts" => home.join("artifacts"),
+        "projects" => home.join("projects"),
+        "datasets" => home.join("datasets"),
+        "logs" => home.join("logs"),
+        _ => return Err(format!("不支持的数据目录类型：{kind}")),
+    };
+    fs::create_dir_all(&path).map_err(|e| format!("创建数据目录失败: {e}"))?;
+    let canonical_home = home.canonicalize().map_err(|e| format!("解析数据目录失败: {e}"))?;
+    let canonical_path = path.canonicalize().map_err(|e| format!("解析目标目录失败: {e}"))?;
+    if !canonical_path.starts_with(&canonical_home) {
+        return Err("目标目录不在 AMS data 内".to_string());
+    }
+    Ok(canonical_path)
+}
+
+#[tauri::command]
+fn open_data_folder(kind: String) -> Result<String, String> {
+    let path = data_folder_path(&kind)?;
+    hidden_command("explorer.exe")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("打开目录失败: {e}"))?;
+    Ok("已打开数据目录".to_string())
+}
+
+
 fn is_reparse_point(path: &PathBuf) -> bool {
     #[cfg(windows)]
     {
@@ -1773,6 +1871,7 @@ async fn install_components(ids: Option<Vec<String>>) -> Result<Vec<ComponentRes
             set_install_current(format!("正在下载并安装 {} {}", asset.id, asset.version));
             results.push(install_component_blocking(&asset));
         }
+        ensure_data_layout();
         set_install_current("安装完成");
         INSTALL_ACTIVE.store(false, Ordering::Relaxed);
         Ok(results)
@@ -1904,6 +2003,7 @@ fn cli_install_components() -> Result<(), String> {
         cli_trace(&format!("installed {} ok={}", asset.id, result.ok));
         lines.push(format!("{} {}({}) -> ok={} size={} path={} msg={}", asset.id, asset.kind, asset.version, result.ok, result.size, result.path, result.message));
     }
+    ensure_data_layout();
     let logs = ams_home().join("logs");
     fs::create_dir_all(&logs).ok();
     let log_path = logs.join("launcher-cli.log");
@@ -1948,6 +2048,7 @@ pub fn run() {
         std::process::exit(if result.is_ok() { 0 } else { 1 });
     }
     let _ = ensure_ams_home_marker();
+    ensure_data_layout();
     if args.iter().any(|arg| arg == "--start-kernel") {
         let result = start_kernel();
         let logs = ams_home().join("logs");
@@ -2001,6 +2102,7 @@ pub fn run() {
             fetch_components,
             install_components,
             install_progress,
+            open_data_folder,
             install_music_plugins,
             app_version,
             open_uninstaller,

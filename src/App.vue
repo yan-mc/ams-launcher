@@ -168,6 +168,14 @@ async function installDefaultVoice() {
   }
 }
 
+async function openDataFolder(kind: string) {
+  try {
+    await invoke<string>("open_data_folder", { kind });
+  } catch (e) {
+    voiceMsg.value = "打开目录失败：" + String(e);
+  }
+}
+
 async function startGateway() {
   busy.value = "正在启动 Gateway…";
   error.value = "";
@@ -553,6 +561,8 @@ onUnmounted(() => {
         <div class="row">
           <button :disabled="voiceBusy" @click="scanVoices">扫描音源</button>
           <button :disabled="voiceBusy" @click="installDefaultVoice">安装默认曼波</button>
+          <button @click="openDataFolder('rvc_voices')">打开变声音源目录</button>
+          <button @click="openDataFolder('tts_voices')">打开 TTS 音源目录</button>
         </div>
         <div class="row">
           <input v-model="voiceSource" class="wide-input" placeholder="本地曼波目录或 voicepack.zip 路径" />
