@@ -1355,6 +1355,48 @@ fn kernel_status() -> KernelInfo {
     info
 }
 
+fn is_bad_web_port(port: u16) -> bool {
+    matches!(port,
+        0 | 1 | 7 | 9 | 11 | 13 | 15 | 17 | 19 | 20 | 21 | 22 | 23 | 25 | 37 | 42 | 43 |
+        53 | 69 | 77 | 79 | 87 | 95 | 101 | 102 | 103 | 104 | 109 | 110 | 111 | 113 |
+        115 | 117 | 119 | 123 | 135 | 137 | 138 | 139 | 143 | 161 | 179 | 389 | 427 |
+        465 | 512 | 513 | 514 | 515 | 526 | 530 | 531 | 532 | 540 | 548 | 554 | 556 |
+        563 | 587 | 601 | 636 | 989 | 990 | 993 | 995 | 1719 | 1720 | 1723 | 2049 |
+        3659 | 4045 | 5060 | 5061 | 6000 | 6566 | 6665 | 6666 | 6667 | 6668 | 6669 |
+        6679 | 6697 | 10080)
+}
+
+fn kernel_log_web_port() -> Option<u16> {
+    let text = fs::read_to_string(kernel_log_path()).ok()?;
+    let mut last = None;
+    for part in text.split("http://127.0.0.1:").skip(1) {
+        let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(port) = digits.parse::<u16>() {
+            last = Some(port);
+        }
+    }
+    last
+}
+
+fn wait_kernel_web_port(timeout: Duration) -> Option<u16> {
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        if let Some(port) = kernel_log_web_port() {
+            return Some(port);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    kernel_log_web_port()
+}
+
+fn kill_process_tree(pid: u32) {
+    let mut command = Command::new("taskkill");
+    command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let _ = command.output();
+}
+
 #[tauri::command]
 fn start_kernel() -> Result<String, String> {
     let current = kernel_status();
@@ -1365,8 +1407,6 @@ fn start_kernel() -> Result<String, String> {
     fs::create_dir_all(&dsh_home).map_err(|e| format!("创建 DSH_HOME 失败: {e}"))?;
     ensure_profile_base_patch(&dsh_home)?;
     fs::create_dir_all(runtime_dir()).map_err(|e| format!("创建 runtime 失败: {e}"))?;
-    let log = fs::File::create(kernel_log_path()).map_err(|e| format!("创建日志失败: {e}"))?;
-    let log_err = log.try_clone().map_err(|e| format!("复制日志句柄失败: {e}"))?;
     if let Some(config) = read_connection() {
         if !config.base_url.trim().is_empty() && !config.api_key.trim().is_empty() {
             apply_connection_config(&config)?;
@@ -1376,31 +1416,46 @@ fn start_kernel() -> Result<String, String> {
     if let Some(exe) = packaged_kernel_exe() {
         let electron_data = ams_home().join("kernel").join("electron-data");
         fs::create_dir_all(&electron_data).map_err(|e| format!("创建 electron userData 失败: {e}"))?;
-        let mut command = Command::new(&exe);
-        command
-            .current_dir(ams_home().join("kernel"))
-            .arg("--user-data-dir")
-            .arg(&electron_data)
-            .env("DSH_HOME", &dsh_home)
-            .stdout(std::process::Stdio::from(log))
-            .stderr(std::process::Stdio::from(log_err));
-        for (key, _) in std::env::vars_os() {
-            if let Some(k) = key.to_str() {
-                if k.starts_with("DSH_") || k.starts_with("AMS_") || k == "NODE_OPTIONS" || k == "NODE_PATH" || k == "ELECTRON_RUN_AS_NODE" {
-                    command.env_remove(k);
+        for attempt in 0..3 {
+            let log = fs::File::create(kernel_log_path()).map_err(|e| format!("创建日志失败: {e}"))?;
+            let log_err = log.try_clone().map_err(|e| format!("复制日志句柄失败: {e}"))?;
+            let mut command = Command::new(&exe);
+            command
+                .current_dir(ams_home().join("kernel"))
+                .arg("--user-data-dir")
+                .arg(&electron_data)
+                .env("DSH_HOME", &dsh_home)
+                .stdout(std::process::Stdio::from(log))
+                .stderr(std::process::Stdio::from(log_err));
+            for (key, _) in std::env::vars_os() {
+                if let Some(k) = key.to_str() {
+                    if k.starts_with("DSH_") || k.starts_with("AMS_") || k == "NODE_OPTIONS" || k == "NODE_PATH" || k == "ELECTRON_RUN_AS_NODE" {
+                        command.env_remove(k);
+                    }
                 }
             }
+            command.env("DSH_HOME", &dsh_home);
+            apply_data_cache_env(&mut command, &ams_home());
+            #[cfg(windows)]
+            command.creation_flags(CREATE_NO_WINDOW);
+            let child = command.spawn().map_err(|e| format!("启动打包内核失败: {e}"))?;
+            write_kernel_json(child.id(), "", 0);
+            if let Some(port) = wait_kernel_web_port(Duration::from_secs(8)) {
+                if is_bad_web_port(port) {
+                    kill_process_tree(child.id());
+                    std::thread::sleep(Duration::from_millis(800));
+                    continue;
+                }
+                return Ok(format!("打包内核已启动，pid={}；port={}；exe={}", child.id(), port, exe.display()));
+            }
+            return Ok(format!("打包内核已启动，pid={}；exe={}", child.id(), exe.display()));
         }
-        command.env("DSH_HOME", &dsh_home);
-        apply_data_cache_env(&mut command, &ams_home());
-        #[cfg(windows)]
-        command.creation_flags(CREATE_NO_WINDOW);
-        let child = command.spawn().map_err(|e| format!("启动打包内核失败: {e}"))?;
-        write_kernel_json(child.id(), "", 0);
-        return Ok(format!("打包内核已启动，pid={}；exe={}", child.id(), exe.display()));
+        return Err("内核连续命中 Node 禁用端口，已停止重试；请检查内核日志".to_string());
     }
 
     let harness = dev_root().join("ams-harness");
+    let log = fs::File::create(kernel_log_path()).map_err(|e| format!("创建日志失败: {e}"))?;
+    let log_err = log.try_clone().map_err(|e| format!("复制日志句柄失败: {e}"))?;
     if !harness.join("package.json").is_file() {
         return Err(format!("找不到内核源码：{}", harness.display()));
     }
