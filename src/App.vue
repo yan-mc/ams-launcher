@@ -29,6 +29,7 @@ type ComponentResult = { id: string; ok: boolean; message: string; path: string;
 type InstallProgress = { active: boolean; downloaded: number; total: number; percent: number; current: string };
 
 const version = ref("0.1.2");
+const showGuide = ref(false);
 const loading = ref(false);
 const busy = ref("");
 const error = ref("");
@@ -394,7 +395,10 @@ onUnmounted(() => {
         <h1>AMS Studio</h1>
         <p class="sub">AI Music Studio · Launcher <span class="tag">M1</span></p>
       </div>
-      <span class="ver">v{{ version }}</span>
+      <div class="header-actions">
+        <button class="guide-button" @click="showGuide = true">使用说明 / 关于 AMS</button>
+        <span class="ver">v{{ version }}</span>
+      </div>
     </header>
 
     <section class="grid">
@@ -583,6 +587,51 @@ onUnmounted(() => {
         <p class="note">M0 已完成：DSH fork 构建 / 启动器打包 / Gateway 23 测试 / 默认曼波 / MSVC 3/3 / 插件闭环 12/12 / RVC+pymss 冒烟 / CI / 备份。</p>
       </div>
     </section>
+    <div v-if="showGuide" class="guide-overlay" @click.self="showGuide = false">
+      <section class="guide-panel" role="dialog" aria-modal="true" aria-label="AMS 使用说明">
+        <div class="guide-head">
+          <div>
+            <h1>AMS Studio 使用说明</h1>
+            <p class="sub">Launcher v{{ version }} · 本地 AI 音乐工作站</p>
+          </div>
+          <button class="guide-close" @click="showGuide = false">关闭</button>
+        </div>
+        <div class="guide-body">
+          <h2>整体结构</h2>
+          <p>启动器负责安装、组件、内核/Gateway 和音源；内核是本地工作区；音乐插件提供任务页面；Gateway 和 RVC/pymss/TTS 运行时执行任务。</p>
+          <h2>首次使用顺序</h2>
+          <ol>
+            <li>检查并安装全部组件。</li>
+            <li>启动内核一次，停止后安装音乐插件，再启动内核。</li>
+            <li>启动 Gateway。</li>
+            <li>打开内核，在左侧进入“AMS 音乐”。</li>
+          </ol>
+          <h2>当前可用功能</h2>
+          <ul>
+            <li><b>TTS 语音合成</b>：Piper，默认中文音色；用户音源放在 data/tts_voices。</li>
+            <li><b>人声分离</b>：pymss，输出 vocals/drums/bass/other stems。</li>
+            <li><b>歌曲换源</b>：严格输入已分离纯人声，输出目标音色纯人声，不混伴奏。</li>
+            <li><b>MSVC 工具</b>：只把 .msvc 转成 .pth；index 可选，缺失时 index_rate=0。</li>
+            <li><b>任务系统</b>：进度、SSE、取消、产物目录。</li>
+          </ul>
+          <h2>数据在哪里</h2>
+          <ul>
+            <li>变声音源：data/voices/&lt;名称&gt;/&lt;名称&gt;.pth（+ 可选 index）</li>
+            <li>TTS 音源：data/tts_voices/&lt;模型&gt;/*.onnx + .onnx.json</li>
+            <li>任务产物：data/artifacts/&lt;job_id&gt;/</li>
+            <li>外部素材导入：data/projects/imports/</li>
+          </ul>
+          <h2>文件选择与目录</h2>
+          <p>音乐插件里的文件字段可直接点“选择文件”，选中后文件复制进 data 并自动回填路径。音源目录和产物目录按钮打开资源管理器，按钮旁也显示路径。</p>
+          <h2>当前未实现</h2>
+          <p>音源炼制（训练）、实时变声、数据集工作室、混音母带、评测器、项目管理仍按 B 方案分阶段实施；这些不会伪装成已实现功能。</p>
+          <h2>上游项目</h2>
+          <p>DSH / Cordis / RVC-Project / pymss-project / Piper。具体版本和许可证以正式发布说明为准。</p>
+          <h2>安全</h2>
+          <p>所有 AMS 数据在安装根 data 下；不修改系统环境变量；Gateway 只监听 127.0.0.1；卸载默认保留用户数据，彻底清理需手动删除安装根。</p>
+        </div>
+      </section>
+    </div>
   </main>
 </template>
 
@@ -591,7 +640,19 @@ onUnmounted(() => {
 * { box-sizing: border-box; }
 body { margin: 0; background: #14161a; color: #e6e8eb; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
 .app { max-width: 1120px; margin: 0 auto; padding: 28px 32px; }
-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 22px; }
+header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 22px; gap: 12px; }
+.header-actions { display: flex; align-items: center; gap: 12px; }
+.guide-button { margin-top: 0; background: #1f2a3a; color: #9fb6d4; border: 1px solid #33445c; border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+.guide-overlay { position: fixed; inset: 0; z-index: 100; background: rgba(5,8,12,.78); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.guide-panel { width: min(900px, 96vw); max-height: 88vh; overflow: auto; background: #1b1e24; border: 1px solid #33445c; border-radius: 12px; padding: 22px 26px; box-shadow: 0 24px 80px rgba(0,0,0,.5); }
+.guide-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; border-bottom: 1px solid #2a2f38; padding-bottom: 12px; margin-bottom: 14px; }
+.guide-head h1 { font-size: 22px; }
+.guide-close { margin-top: 0; background: transparent; color: #9fb6d4; border: 1px solid #33445c; border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+.guide-body h2 { margin: 18px 0 6px; color: #cfd6de; font-size: 14px; }
+.guide-body p, .guide-body li { color: #b6c0cc; font-size: 13px; line-height: 1.65; }
+.guide-body ul, .guide-body ol { margin: 4px 0 8px; padding-left: 20px; }
+.guide-body li { display: list-item; list-style: inherit; border: 0; padding: 2px 0; justify-content: flex-start; }
+.guide-body a { color: #8fb8ff; }
 h1 { margin: 0; font-size: 30px; font-weight: 650; letter-spacing: .5px; }
 .sub { margin: 6px 0 0; color: #9aa3ad; font-size: 13px; }
 .tag { background: #2a3a52; color: #9cc4ff; border-radius: 4px; padding: 1px 6px; font-size: 11px; }
