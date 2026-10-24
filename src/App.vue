@@ -26,6 +26,7 @@ type UpdateManifest = { schema: string; channel: string; sequence: number; signa
 type UpdateVerify = { valid: boolean; message: string; sequence: number; components: number };
 type ComponentAsset = { id: string; kind: string; version: string; url: string; size: number; sha256: string };
 type ComponentResult = { id: string; ok: boolean; message: string; path: string; size: number };
+type InstallProgress = { active: boolean; downloaded: number; total: number; percent: number; current: string };
 
 const version = ref("0.1.2");
 const loading = ref(false);
@@ -51,6 +52,8 @@ const compAssets = ref<ComponentAsset[]>([]);
 const compResults = ref<ComponentResult[]>([]);
 const compMsg = ref("");
 const compBusy = ref(false);
+const compProgress = ref<InstallProgress | null>(null);
+let progressTimer: number | undefined;
 const pluginBusy = ref(false);
 const pluginMsg = ref("");
 const uninstallMsg = ref("");
@@ -117,8 +120,14 @@ async function openKernel() {
 async function refreshGateway() {
   try {
     gateway.value = await invoke<GatewayInfo>("gateway_status");
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function refreshComponents() {
+  try {
     components.value = await invoke<ComponentItem[]>("component_status");
-    if (gateway.value?.healthy) await scanVoices();
   } catch (e) {
     error.value = String(e);
   }
@@ -263,16 +272,35 @@ async function loadComponents() {
 async function installAllComponents() {
   compBusy.value = true;
   compResults.value = [];
+  compProgress.value = { active: true, downloaded: 0, total: 0, percent: 0, current: "准备下载组件" };
   compMsg.value = "正在下载并安装组件（大文件可能较久）…";
+  if (progressTimer !== undefined) window.clearInterval(progressTimer);
+  progressTimer = window.setInterval(async () => {
+    try { compProgress.value = await invoke<InstallProgress>("install_progress"); } catch { /* best-effort */ }
+  }, 400);
   try {
     compResults.value = await invoke<ComponentResult[]>("install_components", { ids: null });
     const ok = compResults.value.filter((r) => r.ok).length;
     compMsg.value = "安装完成：" + ok + "/" + compResults.value.length + " 成功";
+    if (progressTimer !== undefined) { window.clearInterval(progressTimer); progressTimer = undefined; }
+    compProgress.value = { active: false, downloaded: 0, total: 0, percent: 100, current: "安装完成" };
+    await refreshComponents();
+    if (gateway.value?.healthy) await scanVoices();
   } catch (e) {
     compMsg.value = "安装失败：" + String(e);
   } finally {
+    if (progressTimer !== undefined) { window.clearInterval(progressTimer); progressTimer = undefined; }
     compBusy.value = false;
   }
+}
+
+function formatBytes(value: number): string {
+  if (!value) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+  return size.toFixed(unit === 0 ? 0 : 1) + " " + units[unit];
 }
 async function requestUninstall() {
   const ok = window.confirm("确定卸载 AMS Studio？\n\n只删除 AMS 的安装目录和 AMS 数据目录中的 kernel/components/runtime/logs；voices、artifacts 和现有 DSH 的 .dsh 不会被删除。");
@@ -335,15 +363,19 @@ async function installPlugins() {
 }
 
 async function refreshAll() {
-  await Promise.all([refreshEnv(), refreshGateway(), refreshKernel(), refreshConnection(), refreshRuntime()]);
+  await Promise.all([refreshEnv(), refreshGateway(), refreshComponents(), refreshKernel(), refreshConnection(), refreshRuntime()]);
 }
 
 onMounted(() => {
   refreshAll();
-  timer = window.setInterval(() => { refreshGateway(); refreshKernel(); }, 5000);
+  timer = window.setInterval(() => { refreshGateway(); refreshKernel(); }, 10000);
 });
 onUnmounted(() => {
   if (timer !== undefined) window.clearInterval(timer);
+  if (progressTimer !== undefined) {
+    window.clearInterval(progressTimer);
+    progressTimer = undefined;
+  }
 });
 </script>
 
@@ -481,6 +513,14 @@ onUnmounted(() => {
       <div class="card wide">
         <h2>组件安装（本地 feed / GitHub Releases）</h2>
         <p v-if="compMsg" class="note">{{ compMsg }}</p>
+        <div v-if="compProgress && (compProgress.active || compBusy)" class="progress">
+          <div class="progress-head">
+            <span>{{ compProgress.current || "正在安装…" }}</span>
+            <b>{{ compProgress.percent.toFixed(1) }}%</b>
+          </div>
+          <div class="progress-track"><div class="progress-fill" :style="{ width: compProgress.percent + '%' }"></div></div>
+          <small>{{ formatBytes(compProgress.downloaded) }} / {{ formatBytes(compProgress.total) }}</small>
+        </div>
         <ul v-if="compAssets.length">
           <li v-for="c in compAssets" :key="c.id">
             <span>{{ c.kind }}</span>
@@ -562,6 +602,12 @@ input { background: #14161a; color: #dfe6ee; border: 1px solid #2a2f38; border-r
 .wide-input { width: 100%; margin-bottom: 6px; }
 .job { margin-top: 8px; font-size: 13px; color: #c4ccd5; }
 .job .err { display: block; color: #e07777; font-size: 12px; margin-top: 4px; }
+.progress { margin: 10px 0 4px; }
+.progress-head { display: flex; justify-content: space-between; gap: 12px; color: #c4ccd5; font-size: 12px; margin-bottom: 5px; }
+.progress-head b { color: #9fb6d4; font-variant-numeric: tabular-nums; }
+.progress-track { height: 8px; background: #14161a; border: 1px solid #2a2f38; border-radius: 999px; overflow: hidden; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, #3f6fbd, #5b8def); transition: width .35s ease; }
+.progress small { color: #7f8994; font-size: 11px; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; }
 button { margin-top: 12px; background: #263244; color: #9fb6d4; border: 1px solid #33445c; border-radius: 6px; padding: 7px 12px; }
 button:disabled { opacity: .45; }

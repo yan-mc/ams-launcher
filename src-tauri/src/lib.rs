@@ -12,12 +12,40 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+// Live component-install progress. The launcher polls this through a cheap Tauri
+// command while the blocking downloader runs on a worker thread.
+static INSTALL_ACTIVE: AtomicBool = AtomicBool::new(false);
+static INSTALL_DOWNLOADED: AtomicU64 = AtomicU64::new(0);
+static INSTALL_TOTAL: AtomicU64 = AtomicU64::new(0);
+static INSTALL_CURRENT: OnceLock<Mutex<String>> = OnceLock::new();
+
+fn install_current() -> &'static Mutex<String> {
+    INSTALL_CURRENT.get_or_init(|| Mutex::new(String::new()))
+}
+
+fn set_install_current(value: impl Into<String>) {
+    if let Ok(mut current) = install_current().lock() {
+        *current = value.into();
+    }
+}
+
+#[derive(Serialize, Clone, Default)]
+struct InstallProgress {
+    active: bool,
+    downloaded: u64,
+    total: u64,
+    percent: f64,
+    current: String,
+}
 
 /// Spawn a console child without flashing a console window from the GUI launcher.
 fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
@@ -864,10 +892,7 @@ fn stop_gateway() -> Result<String, String> {
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .output();
     match output {
-        Ok(out) => {
-            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            Ok(format!("已停止 Gateway（pid={pid}, port={port}）：{text}"))
-        }
+        Ok(_out) => Ok(format!("已停止 Gateway（pid={pid}, port={port}）")),
         Err(e) => Err(format!("停止失败: {e}")),
     }
 }
@@ -1288,7 +1313,7 @@ fn stop_kernel() -> Result<String, String> {
         .output();
     let _ = fs::remove_file(kernel_json_path());
     match output {
-        Ok(out) => Ok(format!("已停止内核（pid={}）：{}", info.pid, String::from_utf8_lossy(&out.stdout).trim())),
+        Ok(_) => Ok(format!("已停止内核（pid={}）", info.pid)),
         Err(e) => Err(format!("停止失败: {e}")),
     }
 }
@@ -1571,11 +1596,18 @@ fn download_asset_to(asset: &ComponentAsset, dest: &PathBuf) -> Result<u64, Stri
             .and_then(|r| r.error_for_status())
             .map_err(|e| format!("下载 {} 失败: {e}", asset.id))?;
         let mut file = File::create(dest).map_err(|e| format!("创建下载文件失败: {e}"))?;
-        copy(&mut response, &mut file).map_err(|e| format!("写入下载文件失败: {e}"))?;
+        let mut buffer = vec![0u8; 1024 * 1024];
+        loop {
+            let n = response.read(&mut buffer).map_err(|e| format!("读取下载流失败: {e}"))?;
+            if n == 0 { break; }
+            file.write_all(&buffer[..n]).map_err(|e| format!("写入下载文件失败: {e}"))?;
+            INSTALL_DOWNLOADED.fetch_add(n as u64, Ordering::Relaxed);
+        }
     } else {
         let raw = asset.url.strip_prefix("file://").unwrap_or(&asset.url);
         let src = raw.trim_start_matches('/');
-        fs::copy(src, dest).map_err(|e| format!("复制本地组件失败（{src}）: {e}"))?;
+        let copied = fs::copy(src, dest).map_err(|e| format!("复制本地组件失败（{src}）: {e}"))?;
+        INSTALL_DOWNLOADED.fetch_add(copied, Ordering::Relaxed);
     }
     Ok(fs::metadata(dest).map(|m| m.len()).unwrap_or(0))
 }
@@ -1720,19 +1752,48 @@ async fn fetch_components() -> Result<Vec<ComponentAsset>, String> {
 async fn install_components(ids: Option<Vec<String>>) -> Result<Vec<ComponentResult>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let value = fetch_component_manifest()?;
-        let mut results = Vec::new();
+        let mut assets = Vec::new();
         for asset in component_assets(&value) {
             if let Some(ref filter) = ids {
                 if !filter.iter().any(|id| id == &asset.id) {
                     continue;
                 }
             }
+            assets.push(asset);
+        }
+        let total: u64 = assets.iter().map(|asset| {
+            if asset.size > 0 { asset.size } else { asset.parts.iter().map(|part| part.size).sum() }
+        }).sum();
+        INSTALL_DOWNLOADED.store(0, Ordering::Relaxed);
+        INSTALL_TOTAL.store(total, Ordering::Relaxed);
+        INSTALL_ACTIVE.store(true, Ordering::Relaxed);
+        set_install_current("准备下载组件");
+        let mut results = Vec::new();
+        for asset in assets {
+            set_install_current(format!("正在下载并安装 {} {}", asset.id, asset.version));
             results.push(install_component_blocking(&asset));
         }
+        set_install_current("安装完成");
+        INSTALL_ACTIVE.store(false, Ordering::Relaxed);
         Ok(results)
     })
     .await
     .map_err(|e| format!("任务失败: {e}"))?
+}
+
+#[tauri::command]
+fn install_progress() -> InstallProgress {
+    let total = INSTALL_TOTAL.load(Ordering::Relaxed);
+    let downloaded = INSTALL_DOWNLOADED.load(Ordering::Relaxed);
+    let percent = if total == 0 { 0.0 } else { ((downloaded.min(total) as f64) * 100.0 / total as f64).min(100.0) };
+    let current = install_current().lock().map(|value| value.clone()).unwrap_or_default();
+    InstallProgress {
+        active: INSTALL_ACTIVE.load(Ordering::Relaxed),
+        downloaded,
+        total,
+        percent,
+        current,
+    }
 }
 
 #[tauri::command]
@@ -1939,6 +2000,7 @@ pub fn run() {
             verify_update_manifest,
             fetch_components,
             install_components,
+            install_progress,
             install_music_plugins,
             app_version,
             open_uninstaller,
