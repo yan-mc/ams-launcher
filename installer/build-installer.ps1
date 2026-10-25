@@ -14,10 +14,10 @@ Push-Location $installer
 try {
   & $makensis 'ams-setup.nsi'
   if ($LASTEXITCODE -ne 0) { throw "makensis failed: $LASTEXITCODE" }
-  $out = Join-Path $installer 'AMS-Studio-Setup-0.2.1.exe'
+  $out = Join-Path $installer 'AMS-Studio-Setup-1.0.0-rc.1.exe'
   if (-not (Test-Path -LiteralPath $out)) { throw 'installer output missing' }
-  Copy-Item -LiteralPath $out -Destination (Join-Path $dist 'AMS-Studio-Setup-0.2.1.exe') -Force
-  $info = [pscustomobject]@{ version = '0.2.1'; file = 'AMS-Studio-Setup-0.2.1.exe'; bytes = (Get-Item -LiteralPath (Join-Path $dist 'AMS-Studio-Setup-0.2.1.exe')).Length; sha256 = (Get-FileHash -LiteralPath (Join-Path $dist 'AMS-Studio-Setup-0.2.1.exe') -Algorithm SHA256).Hash }
+  Copy-Item -LiteralPath $out -Destination (Join-Path $dist 'AMS-Studio-Setup-1.0.0-rc.1.exe') -Force
+  $info = [pscustomobject]@{ version = '1.0.0-rc.1'; file = 'AMS-Studio-Setup-1.0.0-rc.1.exe'; bytes = (Get-Item -LiteralPath (Join-Path $dist 'AMS-Studio-Setup-1.0.0-rc.1.exe')).Length; sha256 = (Get-FileHash -LiteralPath (Join-Path $dist 'AMS-Studio-Setup-1.0.0-rc.1.exe') -Algorithm SHA256).Hash }
   $info | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dist 'installer-info.json') -Encoding UTF8
   $info | Format-List | Out-String
 } finally { Pop-Location }

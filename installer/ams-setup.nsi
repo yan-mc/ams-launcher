@@ -4,16 +4,16 @@ Unicode true
 
 Name "AMS Studio"
 Caption "AMS Studio 安装程序"
-OutFile "AMS-Studio-Setup-0.2.1.exe"
+OutFile "AMS-Studio-Setup-1.0.0-rc.1.exe"
 InstallDir "F:\AMS-Studio"
 InstallDirRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "InstallLocation"
 RequestExecutionLevel user
 BrandingText "AMS Studio"
-VIProductVersion "0.2.1.0"
+VIProductVersion "1.0.0.0"
 VIAddVersionKey "ProductName" "AMS Studio"
 VIAddVersionKey "CompanyName" "yanmc"
 VIAddVersionKey "FileDescription" "AMS Studio 安装程序"
-VIAddVersionKey "FileVersion" "0.2.1"
+VIAddVersionKey "FileVersion" "1.0.0-rc.1"
 
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
@@ -51,7 +51,7 @@ Section "AMS Studio" SecMain
   WriteUninstaller "$INSTDIR\AMS-Studio-Uninstall.exe"
 
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayName" "AMS Studio"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayVersion" "0.2.1"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayVersion" "1.0.0-rc.1"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "Publisher" "yanmc"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayIcon" "$INSTDIR\ams-launcher.exe"
