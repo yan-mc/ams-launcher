@@ -968,14 +968,24 @@ fn start_gateway() -> Result<String, String> {
     let runtime = read_runtime_config();
     if !runtime.rvc_python.trim().is_empty() { command.env("AMS_RVC_PYTHON", runtime.rvc_python.trim()); }
     if !runtime.rvc_root.trim().is_empty() { command.env("AMS_RVC_ROOT", runtime.rvc_root.trim()); }
-    if !runtime.pymss_python.trim().is_empty() { command.env("AMS_PYMSS_PYTHON", runtime.pymss_python.trim()); }
+    let mut pymss_python = runtime.pymss_python.trim().to_string();
+    let pymss_original = PathBuf::from(&pymss_python);
+    if pymss_original.file_name().and_then(|v| v.to_str()) == Some("python.exe") {
+        if pymss_original.parent().and_then(|p| p.file_name()).and_then(|v| v.to_str()) == Some("python") {
+            if let Some(root) = pymss_original.parent().and_then(|p| p.parent()) {
+                let venv = root.join(".venv").join("Scripts").join("python.exe");
+                if venv.is_file() { pymss_python = venv.display().to_string(); }
+            }
+        }
+    }
+    if !pymss_python.is_empty() { command.env("AMS_PYMSS_PYTHON", &pymss_python); }
     if !runtime.pymss_root.trim().is_empty() { command.env("AMS_PYMSS_ROOT", runtime.pymss_root.trim()); }
     let vcrun = ams_home().join("tools").join("vcrun").join("0.1.0");
     if vcrun.is_dir() {
         let old_path = env::var("PATH").unwrap_or_default();
         command.env("PATH", format!("{};{}", vcrun.display(), old_path));
     }
-    let pymss_base = PathBuf::from(runtime.pymss_python.trim());
+    let pymss_base = PathBuf::from(&pymss_python);
     if pymss_base.file_name().and_then(|v| v.to_str()) == Some("python.exe") {
         if pymss_base.parent().and_then(|p| p.file_name()).and_then(|v| v.to_str()) == Some("python") {
             if let Some(root) = pymss_base.parent().and_then(|p| p.parent()) {
