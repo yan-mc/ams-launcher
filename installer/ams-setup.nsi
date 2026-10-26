@@ -2,9 +2,15 @@ Unicode true
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 
+; Version single source: default kept for standalone makensis runs;
+; build-installer.ps1 passes /DAMS_VERSION=<version from tauri.conf.json>.
+!ifndef AMS_VERSION
+  !define AMS_VERSION "1.0.0-rc.2"
+!endif
+
 Name "AMS Studio"
 Caption "AMS Studio 安装程序"
-OutFile "AMS-Studio-Setup-1.0.0-rc.1.exe"
+OutFile "AMS-Studio-Setup-${AMS_VERSION}.exe"
 InstallDir "F:\AMS-Studio"
 InstallDirRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "InstallLocation"
 RequestExecutionLevel user
@@ -13,7 +19,7 @@ VIProductVersion "1.0.0.0"
 VIAddVersionKey "ProductName" "AMS Studio"
 VIAddVersionKey "CompanyName" "yanmc"
 VIAddVersionKey "FileDescription" "AMS Studio 安装程序"
-VIAddVersionKey "FileVersion" "1.0.0-rc.1"
+VIAddVersionKey "FileVersion" "${AMS_VERSION}"
 
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
@@ -52,7 +58,7 @@ Section "AMS Studio" SecMain
   CopyFiles "$INSTDIR\AMS-Studio-Uninstall.exe" "$INSTDIR\uninstall.exe"
 
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayName" "AMS Studio"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayVersion" "1.0.0-rc.1"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayVersion" "${AMS_VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "Publisher" "yanmc"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayIcon" "$INSTDIR\ams-launcher.exe"
