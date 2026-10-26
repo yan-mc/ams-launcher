@@ -1,3 +1,4 @@
 stage/
 dist/
 *.exe
+*.exe.bak-*
