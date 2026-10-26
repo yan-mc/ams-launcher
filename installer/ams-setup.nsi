@@ -49,6 +49,7 @@ Section "AMS Studio" SecMain
   CreateDirectory "$INSTDIR\data\voices"
 
   WriteUninstaller "$INSTDIR\AMS-Studio-Uninstall.exe"
+  CopyFiles "$INSTDIR\AMS-Studio-Uninstall.exe" "$INSTDIR\uninstall.exe"
 
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayName" "AMS Studio"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayVersion" "1.0.0-rc.1"
@@ -65,6 +66,7 @@ Section "Uninstall"
   ; Remove only installer-owned program files. \data is intentionally preserved.
   Delete "$INSTDIR\ams-launcher.exe"
   Delete "$INSTDIR\AMS-Studio-Uninstall.exe"
+  Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio"
   DeleteRegKey HKCU "Software\yanmc\AMS Studio"
