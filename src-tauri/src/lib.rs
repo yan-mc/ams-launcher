@@ -1677,7 +1677,7 @@ fn component_manifest_source() -> String {
 fn read_text_source(source: &str) -> Result<String, String> {
     if source.starts_with("http://") || source.starts_with("https://") {
         let client = reqwest::blocking::Client::builder()
-            .user_agent("ams-launcher/0.2.0")
+            .user_agent(concat!("ams-launcher/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(60))
             .build()
             .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
@@ -1775,7 +1775,7 @@ fn extract_zip(zip_path: &PathBuf, target: &PathBuf) -> Result<u64, String> {
 fn download_asset_to(asset: &ComponentAsset, dest: &PathBuf) -> Result<u64, String> {
     if asset.url.starts_with("http://") || asset.url.starts_with("https://") {
         let client = reqwest::blocking::Client::builder()
-            .user_agent("ams-launcher/0.2.0")
+            .user_agent(concat!("ams-launcher/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(1800))
             .build()
             .map_err(|e| format!("HTTP 客户端失败: {e}"))?;
@@ -2015,18 +2015,31 @@ fn install_music_plugins() -> Result<String, String> {
         }
     }
     let plugin_dir = home.join("components").join("plugin.ams.music.bundle");
+    // 动态发现组件包，避免把版本号硬编码（rc.1 曾因写死 0.3.0 导致 "安装音乐插件" 失败）。
+    let find_tgz = |prefix: &str| -> Result<PathBuf, String> {
+        let entries = fs::read_dir(&plugin_dir)
+            .map_err(|e| format!("读取插件组件目录失败（{}）：{e}", plugin_dir.display()))?;
+        let mut hits: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.starts_with(prefix) && name.ends_with(".tgz"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        hits.sort();
+        hits.pop().ok_or_else(|| {
+            format!("插件组件不完整，缺少 {prefix}*.tgz（目录：{}）", plugin_dir.display())
+        })
+    };
     let tarballs = [
-        "ams-plugin-core-0.3.0.tgz",
-        "ams-plugin-ui-0.3.0.tgz",
-        "ams-music-bundle-0.3.0.tgz",
+        find_tgz("ams-plugin-core-")?,
+        find_tgz("ams-plugin-ui-")?,
+        find_tgz("ams-music-bundle-")?,
     ];
-    for name in tarballs {
-        if !plugin_dir.join(name).is_file() {
-            return Err(format!("插件组件不完整，缺少：{}", plugin_dir.join(name).display()));
-        }
-    }
-    for name in tarballs {
-        let tarball = plugin_dir.join(name);
+    for tarball in tarballs {
         let mut command = hidden_command("cmd.exe");
         command
             .current_dir(&home)
@@ -2052,7 +2065,7 @@ fn install_music_plugins() -> Result<String, String> {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            return Err(format!("安装 {} 失败：{}{}", name, stdout, stderr));
+            return Err(format!("安装 {} 失败：{}{}", tarball.display(), stdout, stderr));
         }
     }
     let modules = profile.join("node_modules").join("@ams");
