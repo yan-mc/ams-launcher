@@ -1049,13 +1049,50 @@ fn component_status() -> Vec<ComponentItem> {
     });
 
     let plugins_dir = ams_home().join("components").join("plugin.ams.music.bundle");
-    let plugin_pkgs = plugins_dir.join("ams-music-bundle-0.3.0.tgz").is_file()
-        || plugins_dir.join("ams-plugin-core-0.3.0.tgz").is_file();
+    // 不要硬编码组件包版本号：旧代码写死 0.3.0，导致 v1.0.x 的 *-1.0.0.tgz 永远被判成“未安装”。
+    let has_plugin_pkg = |prefix: &str| -> bool {
+        fs::read_dir(&plugins_dir)
+            .ok()
+            .map(|entries| {
+                entries.filter_map(|entry| entry.ok()).any(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .map(|name| name.starts_with(prefix) && name.ends_with(".tgz"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    };
+    let plugin_pkgs = has_plugin_pkg("ams-music-bundle-")
+        && has_plugin_pkg("ams-plugin-core-")
+        && has_plugin_pkg("ams-plugin-ui-");
+    let ams_profile = ams_home()
+        .join("kernel")
+        .join("dsh")
+        .join("profiles")
+        .join("desktop")
+        .join("node_modules")
+        .join("@ams");
+    let plugin_in_kernel = ams_profile.join("music-bundle").is_dir()
+        && ams_profile.join("plugin-core").is_dir()
+        && ams_profile.join("plugin-ui").is_dir();
+    let plugin_state = if plugin_in_kernel {
+        "已安装到内核"
+    } else if plugin_pkgs {
+        "已下载（未安装到内核）"
+    } else {
+        "未安装"
+    };
     items.push(ComponentItem {
         name: "音乐插件".to_string(),
-        state: if plugin_pkgs { "已下载".to_string() } else { "未安装".to_string() },
-        detail: plugins_dir.display().to_string(),
-        ok: plugin_pkgs,
+        state: plugin_state.to_string(),
+        detail: if plugin_in_kernel {
+            format!("{}；内核 profile 已加载", plugins_dir.display())
+        } else {
+            plugins_dir.display().to_string()
+        },
+        ok: plugin_in_kernel,
     });
 
     let gateway = gateway_status();
@@ -2208,6 +2245,16 @@ pub fn run() {
         let line = format!("downloads cleaned: freed-bytes={freed} dir={}", downloads.display());
         let _ = fs::write(logs.join("launcher-cleanup-downloads.log"), &line);
         println!("{line}");
+        std::process::exit(0);
+    }
+    if args.iter().any(|arg| arg == "--component-status") {
+        // 诊断用：输出与启动器“组件状态”卡片相同的判定结果。
+        let items = component_status();
+        let json = serde_json::to_string_pretty(&items).unwrap_or_default();
+        let logs = ams_home().join("logs");
+        fs::create_dir_all(&logs).ok();
+        let _ = fs::write(logs.join("launcher-component-status.json"), &json);
+        println!("{json}");
         std::process::exit(0);
     }
     if args.iter().any(|arg| arg == "--start-kernel") {
