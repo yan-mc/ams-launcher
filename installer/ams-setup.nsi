@@ -54,15 +54,18 @@ Section "AMS Studio" SecMain
   CreateDirectory "$INSTDIR\data\tts_voices"
   CreateDirectory "$INSTDIR\data\voices"
 
-  WriteUninstaller "$INSTDIR\AMS-Studio-Uninstall.exe"
-  CopyFiles "$INSTDIR\AMS-Studio-Uninstall.exe" "$INSTDIR\uninstall.exe"
+  ; Single uninstaller: the launcher detects/opens "$INSTDIR\uninstall.exe".
+  ; (Older 1.0.0 installs shipped a byte-identical AMS-Studio-Uninstall.exe copy;
+  ; delete it here so an upgrade leaves exactly one uninstaller.)
+  Delete "$INSTDIR\AMS-Studio-Uninstall.exe"
+  WriteUninstaller "$INSTDIR\uninstall.exe"
 
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayName" "AMS Studio"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayVersion" "${AMS_VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "Publisher" "yanmc"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayIcon" "$INSTDIR\ams-launcher.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "UninstallString" '"$INSTDIR\AMS-Studio-Uninstall.exe"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "UninstallString" '"$INSTDIR\uninstall.exe"'
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "NoRepair" 1
   WriteRegStr HKCU "Software\yanmc\AMS Studio" "" "$INSTDIR"
@@ -71,6 +74,7 @@ SectionEnd
 Section "Uninstall"
   ; Remove only installer-owned program files. \data is intentionally preserved.
   Delete "$INSTDIR\ams-launcher.exe"
+  ; Legacy duplicate from 1.0.0 setups + the single current uninstaller.
   Delete "$INSTDIR\AMS-Studio-Uninstall.exe"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"

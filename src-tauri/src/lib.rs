@@ -1772,6 +1772,38 @@ fn extract_zip(zip_path: &PathBuf, target: &PathBuf) -> Result<u64, String> {
     Ok(total)
 }
 
+/// Remove staged install archives from `data/components/downloads`.
+///
+/// The download directory is pure staging: once a component has been extracted and
+/// verified it is never read again.  Keeping the archives -- and especially keeping
+/// every split part *plus* the concatenated zip -- used to double the footprint of
+/// multi-part runtimes (~16 GB for rvc/pymss/tts-train).  This helper is best-effort
+/// and only ever touches files below the given directory.
+fn cleanup_downloads_dir(downloads: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(downloads) else { return 0 };
+    let mut freed = 0u64;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let size = if path.is_dir() {
+            fs::read_dir(&path)
+                .ok()
+                .map(|it| it.flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum::<u64>())
+                .unwrap_or(0)
+        } else {
+            entry.metadata().map(|m| m.len()).unwrap_or(0)
+        };
+        let removed = if path.is_dir() {
+            fs::remove_dir_all(&path).is_ok()
+        } else {
+            fs::remove_file(&path).is_ok()
+        };
+        if removed {
+            freed += size;
+        }
+    }
+    freed
+}
+
 fn download_asset_to(asset: &ComponentAsset, dest: &PathBuf) -> Result<u64, String> {
     if asset.url.starts_with("http://") || asset.url.starts_with("https://") {
         let client = reqwest::blocking::Client::builder()
@@ -1826,6 +1858,9 @@ fn download_parts_to(asset: &ComponentAsset, downloads: &PathBuf) -> Result<Path
         }
         let mut input = File::open(&part_path).map_err(|e| format!("打开分卷失败: {e}"))?;
         copy(&mut input, &mut out).map_err(|e| format!("合并分卷失败: {e}"))?;
+        // 分卷已合并进 zip，立刻删掉分卷，避免分卷+zip 双份占用。
+        drop(input);
+        let _ = fs::remove_file(&part_path);
     }
     Ok(zip_path)
 }
@@ -1902,12 +1937,17 @@ fn install_component_blocking(asset: &ComponentAsset) -> ComponentResult {
         }
         let extracted = extract_zip(&zip_path, &target)?;
         apply_runtime_component_config(asset, &target)?;
-        if asset.id == "asset.voicepack.manbo" {
+        let message = if asset.id == "asset.voicepack.manbo" {
             let voices = ams_home().join("voices").join("曼波");
             let voice_message = install_voicepack_dir(&target, &voices)?;
-            return Ok((format!("已下载曼波资产并安装到 voices：{}", voice_message), size));
-        }
-        Ok((format!("已安装 {} {}（{} B 下载，{} B 解包）", asset.id, asset.version, size, extracted), size))
+            format!("已下载曼波资产并安装到 voices：{}", voice_message)
+        } else {
+            format!("已安装 {} {}（{} B 下载，{} B 解包）", asset.id, asset.version, size, extracted)
+        };
+        // 组件已解包并落盘，安装包/分卷不再有任何用途：立即清理，避免 downloads 长期成倍占用。
+        let _ = fs::remove_file(&zip_path);
+        let _ = cleanup_downloads_dir(&downloads);
+        Ok((message, size))
     })();
     match result {
         Ok((message, size)) => ComponentResult {
@@ -1962,6 +2002,8 @@ async fn install_components(ids: Option<Vec<String>>) -> Result<Vec<ComponentRes
             set_install_current(format!("正在下载并安装 {} {}", asset.id, asset.version));
             results.push(install_component_blocking(&asset));
         }
+        let freed = cleanup_downloads_dir(&ams_home().join("components").join("downloads"));
+        cli_trace(&format!("install complete; downloads cleaned bytes={freed}"));
         ensure_data_layout();
         set_install_current("安装完成");
         INSTALL_ACTIVE.store(false, Ordering::Relaxed);
@@ -2109,6 +2151,9 @@ fn cli_install_components() -> Result<(), String> {
     ensure_data_layout();
     let logs = ams_home().join("logs");
     fs::create_dir_all(&logs).ok();
+    let freed = cleanup_downloads_dir(&ams_home().join("components").join("downloads"));
+    cli_trace(&format!("downloads cleanup after install: freed bytes={freed}"));
+    lines.push(format!("downloads-cleanup freed-bytes={freed}"));
     let log_path = logs.join("launcher-cli.log");
     let _ = fs::write(&log_path, lines.join("\n") + "\n");
     let failed = lines.iter().any(|line| line.contains("ok=false"));
@@ -2152,6 +2197,19 @@ pub fn run() {
     }
     let _ = ensure_ams_home_marker();
     ensure_data_layout();
+    // Self-healing: a previous install may have been interrupted before the staged
+    // archives were removed.  Collect them before anything else uses the disk.
+    let _ = cleanup_downloads_dir(&ams_home().join("components").join("downloads"));
+    if args.iter().any(|arg| arg == "--cleanup-downloads") {
+        let downloads = ams_home().join("components").join("downloads");
+        let freed = cleanup_downloads_dir(&downloads);
+        let logs = ams_home().join("logs");
+        fs::create_dir_all(&logs).ok();
+        let line = format!("downloads cleaned: freed-bytes={freed} dir={}", downloads.display());
+        let _ = fs::write(logs.join("launcher-cleanup-downloads.log"), &line);
+        println!("{line}");
+        std::process::exit(0);
+    }
     if args.iter().any(|arg| arg == "--start-kernel") {
         let result = start_kernel();
         let logs = ams_home().join("logs");
