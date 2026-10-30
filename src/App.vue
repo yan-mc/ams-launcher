@@ -30,6 +30,8 @@ type InstallProgress = { active: boolean; downloaded: number; total: number; per
 
 const version = ref("0.1.2");
 const showGuide = ref(false);
+const showAgentGuide = ref(false);
+const showFeatureGuide = ref(false);
 const loading = ref(false);
 const busy = ref("");
 const error = ref("");
@@ -312,7 +314,7 @@ function formatBytes(value: number): string {
   return size.toFixed(unit === 0 ? 0 : 1) + " " + units[unit];
 }
 async function requestUninstall() {
-  const ok = window.confirm("确定卸载 AMS Studio？\n\n只删除 AMS 的安装目录和 AMS 数据目录中的 kernel/components/runtime/logs；voices、artifacts 和现有 DSH 的 .dsh 不会被删除。");
+  const ok = window.confirm("确定卸载 嘉音Studio？\n\n只删除 AMS 的安装目录和 AMS 数据目录中的 kernel/components/runtime/logs；voices、artifacts 和现有 DSH 的 .dsh 不会被删除。");
   if (!ok) return;
   uninstallMsg.value = "正在打开卸载程序…";
   try { uninstallMsg.value = await invoke<string>("open_uninstaller"); }
@@ -376,6 +378,7 @@ async function refreshAll() {
 }
 
 onMounted(() => {
+  document.title = "嘉音Studio";
   refreshAll();
   timer = window.setInterval(() => { refreshGateway(); refreshKernel(); }, 10000);
 });
@@ -391,12 +394,17 @@ onUnmounted(() => {
 <template>
   <main class="app">
     <header>
-      <div>
-        <h1>AMS Studio</h1>
-        <p class="sub">AI Music Studio · Launcher <span class="tag">M1</span></p>
+      <div class="brand-head">
+        <img class="brand-logo" src="./assets/logo.png" alt="嘉音Studio" />
+        <div>
+          <h1>嘉音Studio</h1>
+          <p class="sub">本地 AI 音乐工作站 · Launcher v{{ version }} <span class="tag">嘉音Studio</span></p>
+        </div>
       </div>
       <div class="header-actions">
-        <button class="guide-button" @click="showGuide = true">使用说明 / 关于 AMS</button>
+        <button class="guide-button" @click="showAgentGuide = true">Agent 插件功能</button>
+        <button class="guide-button" @click="showFeatureGuide = true">软件功能总览</button>
+        <button class="guide-button" @click="showGuide = true">使用说明 / 关于</button>
         <span class="ver">v{{ version }}</span>
       </div>
     </header>
@@ -482,7 +490,7 @@ onUnmounted(() => {
       <div class="card">
         <h2>维护</h2>
         <p class="note">卸载只清理 AMS 自己的安装目录和 AMS 数据目录（kernel/components/runtime/logs）；voices、artifacts 以及现有 DSH 的 .dsh 不会被删除。</p>
-        <button @click="requestUninstall">卸载 AMS Studio…</button>
+        <button @click="requestUninstall">卸载 嘉音Studio…</button>
         <p v-if="uninstallMsg" class="note">{{ uninstallMsg }}</p>
       </div>
 
@@ -546,10 +554,10 @@ onUnmounted(() => {
         <div class="row">
           <button :disabled="compBusy" @click="loadComponents">检查组件清单</button>
           <button :disabled="compBusy || !compAssets.length" @click="installAllComponents">下载并安装全部</button>
-          <button :disabled="pluginBusy" @click="installPlugins">安装音乐插件到内核</button>
+          <button :disabled="pluginBusy" @click="installPlugins">安装插件到内核（音乐 + Agent）</button>
         </div>
         <p v-if="pluginMsg" class="note">{{ pluginMsg }}</p>
-        <p class="note">插件安装需要内核 profile 已初始化：先启动一次 AMS Kernel，停止后再点“安装音乐插件到内核”。</p>
+        <p class="note">插件安装需要内核 profile 已初始化：先启动一次 AMS Kernel，停止后再点“安装插件到内核”。会同时安装音乐插件（14 页签）和 Agent 插件（20 个 ams_* 工具 + 内核换标）。</p>
       </div>
 
       <div class="card wide">
@@ -591,7 +599,7 @@ onUnmounted(() => {
       <section class="guide-panel" role="dialog" aria-modal="true" aria-label="AMS 使用说明">
         <div class="guide-head">
           <div>
-            <h1>AMS Studio 使用说明</h1>
+            <h1>嘉音Studio 使用说明</h1>
             <p class="sub">Launcher v{{ version }} · 本地 AI 音乐工作站</p>
           </div>
           <button class="guide-close" @click="showGuide = false">关闭</button>
@@ -623,12 +631,172 @@ onUnmounted(() => {
           </ul>
           <h2>文件选择与目录</h2>
           <p>音乐插件里的文件字段可直接点“选择文件”，选中后文件复制进 data 并自动回填路径。音源目录和产物目录按钮打开资源管理器，按钮旁也显示路径。</p>
-          <h2>当前未实现</h2>
-          <p>音源炼制（训练）、实时变声、数据集工作室、混音母带、评测器、项目管理仍按 B 方案分阶段实施；这些不会伪装成已实现功能。</p>
+          <h2>功能总览 / Agent 插件</h2>
+          <p>全部 14 个音乐页签（音源炼制、实时变声、数据集工作室、混音母带、评测器、项目管理等）均已实现；点击右上角“软件功能总览”和“Agent 插件功能”查看完整说明。</p>
           <h2>上游项目</h2>
           <p>DSH / Cordis / RVC-Project / pymss-project / Piper。具体版本和许可证以正式发布说明为准。</p>
           <h2>安全</h2>
           <p>所有 AMS 数据在安装根 data 下；不修改系统环境变量；Gateway 只监听 127.0.0.1；卸载默认保留用户数据，彻底清理需手动删除安装根。</p>
+        </div>
+      </section>
+    </div>
+    <div v-if="showAgentGuide" class="guide-overlay" @click.self="showAgentGuide = false">
+      <section class="guide-panel" role="dialog" aria-modal="true" aria-label="Agent 插件功能">
+        <div class="guide-head">
+          <div>
+            <h1>Agent 插件功能（20 个工具）</h1>
+            <p class="sub">让 AI 在对话里直接操作整套嘉音Studio · 默认只读，写操作需确认</p>
+          </div>
+          <button class="guide-close" @click="showAgentGuide = false">关闭</button>
+        </div>
+        <div class="guide-body">
+          <p>安装方式：启动器 → “安装插件到内核（音乐 + Agent）”。装好后在 AMS Kernel 的对话框里直接说需求，Agent 会调用 <b>ams_*</b> 工具完成；也可以让它先列清单/出报告，再确认执行。</p>
+          <h2>一、查看与巡检（只读）</h2>
+          <ul>
+            <li><b>ams_mode_enter</b>：进入音乐工作模式（read / execute / publish），写操作前先过这一关。</li>
+            <li><b>ams_status</b>：查看 Gateway 健康、版本、任务数、数据根目录。</li>
+            <li><b>ams_inventory</b>：列出音源（RVC）、TTS 音色、数据集、工程。</li>
+            <li><b>ams_dataset_inspect</b>：检查数据集结构、片段数、时长、采样率、缺失文件。</li>
+            <li><b>ams_dataset_audit</b>：数据集质量审计——过短/过长、静音、削波、音量过低、重复片段、缺文本、语气词。</li>
+            <li><b>ams_docs_lookup</b>：按需查询内置参考文档（架构/工具/安全/数据集/发布/经验）。</li>
+            <li><b>ams_release_check</b>：发布前自检 feed/manifest sequence、setup 哈希、SHA256SUMS、必需资产。</li>
+          </ul>
+          <h2>二、整理与准备（写操作，需确认）</h2>
+          <ul>
+            <li><b>ams_dataset_clean</b>：安全清理数据集——先给报告和逐文件清单，确认后只移动到 data/trash，不删原件。</li>
+            <li><b>ams_tts_text_clean</b>：TTS 文本清洗（去括号/标签/控制字符、标点规范化），输出 metadata.cleaned.csv，原文件不动。</li>
+            <li><b>ams_dataset_prepare_rvc</b>：把 wav/目录准备成 RVC 训练数据集（统一采样率、切 3–10 秒片段）。</li>
+            <li><b>ams_dataset_prepare_tts</b>：准备 TTS 训练数据集。</li>
+            <li><b>ams_voice_delete_to_trash</b>：把音色/模型目录移到回收站（可恢复）。</li>
+          </ul>
+          <h2>三、跑任务（Gateway 串行 GPU 队列）</h2>
+          <ul>
+            <li><b>ams_job_submit</b>：提交 RVC 训练/换源、pymss 分离、TTS 合成/训练、数据集准备、评测、混音、MSVC 转换。</li>
+            <li><b>ams_job_status / ams_job_list / ams_job_wait / ams_job_cancel</b>：查询、列表、等待、取消任务。</li>
+            <li><b>ams_tts_synthesize</b>：直接合成 TTS（需确认）。</li>
+            <li><b>ams_transcribe</b>：本地 Vosk 语音转写（音频不上传；依赖/模型自动探测）。</li>
+            <li><b>ams_evaluate_audio</b>：客观评测（时长/采样率/峰值/RMS/削波/静音），可选 ASR 转写并算字召回。</li>
+          </ul>
+          <h2>四、Skill 与安全</h2>
+          <ul>
+            <li><b>Skill：ams-music-processing</b>：让 Agent 知道什么时候用哪个工具、写操作边界、数据集规范、发布检查清单。</li>
+            <li>只读写 &lt;安装根&gt;/data，越界直接 PATH_DENIED；没有 shell；删除只进回收站；音频/转写默认不外传。</li>
+            <li>审计日志：data/logs/agent-music-load.log（加载、20 tools 注册、自检）。</li>
+          </ul>
+          <h2>五、对话示例</h2>
+          <ul>
+            <li>“看看我有哪些音源和数据集，哪个数据集质量有问题？”</li>
+            <li>“把 datasets/xianyun640 里太短的片段清掉，先给报告，确认后再移动。”</li>
+            <li>“用曼波音色把 projects/demo/vocals.wav 换源，调 +2 半音。”</li>
+            <li>“把这首歌做人声分离，再用分离出的人声换源。”</li>
+            <li>“合成一段中文 TTS：‘欢迎使用嘉音Studio’，用 huayan 音色。”</li>
+            <li>“评测 artifacts/job_xxx/out.wav，转写看看和文本对不对。”</li>
+          </ul>
+        </div>
+      </section>
+    </div>
+    <div v-if="showFeatureGuide" class="guide-overlay" @click.self="showFeatureGuide = false">
+      <section class="guide-panel" role="dialog" aria-modal="true" aria-label="软件功能总览">
+        <div class="guide-head">
+          <div>
+            <h1>嘉音Studio 软件功能总览</h1>
+            <p class="sub">14 个音乐页签 + 本地运行环境 + 任务系统 · 全部本地、GPU 加速、数据不出机</p>
+          </div>
+          <button class="guide-close" @click="showFeatureGuide = false">关闭</button>
+        </div>
+        <div class="guide-body">
+          <h2>0. 它是什么</h2>
+          <p>本地优先的 AI 音乐工作站：Tauri 启动器负责安装/更新/启动；DSH 内核是工作区与 AI 对话入口；Cordis 插件提供 14 个音乐页签；FastAPI Gateway 调度 RVC / pymss / TTS / TTS 训练 / MSVC / 混音 / 评测等任务；所有音频、模型、工程都在安装目录 data 下。</p>
+          <h2>1. 项目 / 工程管理</h2>
+          <ul>
+            <li>页签“项目”：新建/切换工程，查看导入素材、历史任务与产物。</li>
+            <li>外部音频先复制进 data/projects/imports 再引用，避免路径丢失。</li>
+            <li>产物统一在 data/artifacts/&lt;job_id&gt;/，可一键打开目录。</li>
+          </ul>
+          <h2>2. 音源炼制（RVC 训练）</h2>
+          <ul>
+            <li>输入：已准备好的数据集（data/datasets/&lt;名称&gt;/processed，3–10 秒片段、统一采样率）。</li>
+            <li>参数：模型版本 v2/v1、采样率 48k/40k/32k、F0 引导+方法（rmvpe/harvest/pm）、epochs、batch、save_every、GPU。</li>
+            <li>输出：data/voices/&lt;模型名&gt;/&lt;模型名&gt;.pth（+ .index），训练完自动注册为可用音色。</li>
+            <li>建议：显存不足把 batch 降到 1–2；数据集质量决定音色好坏（先用“数据集工作室”审计/清理）。</li>
+          </ul>
+          <h2>3. 歌曲换源（RVC 推理）</h2>
+          <ul>
+            <li>严格输入“已分离的纯人声”（先用“人声分离”处理整曲）；输出目标音色纯人声，不混伴奏。</li>
+            <li>可调：目标音色、变调（半音）、F0 方法、index 混合率、filter_radius；支持批量队列、A/B 试听、导出纯人声。</li>
+            <li>产物仍可回到“混音母带”与伴奏合成。</li>
+          </ul>
+          <h2>4. 实时变声（VC）</h2>
+          <ul>
+            <li>页签“实时变声”：选择输入/输出设备与目标音色，实时把麦克风/系统声音变成目标音色。</li>
+            <li>依赖 service-vc（组件安装时部署到 data/components/vc-service），Kernel 首次启动后自动接管。</li>
+            <li>适合直播/配音试音；长稳建议先做 30 分钟压测。</li>
+          </ul>
+          <h2>5. 音色库</h2>
+          <ul>
+            <li>管理 data/voices 下的 RVC 音色：扫描、校验（pth/index、采样率）、打开目录、从本地路径导入。</li>
+            <li>支持把模型移到回收站（可恢复），不会直接删除原件。</li>
+          </ul>
+          <h2>6. 人声分离（pymss）</h2>
+          <ul>
+            <li>输入整曲音频，输出 vocals / drums / bass / other stems。</li>
+            <li>可选模型 scnet_checkpoint_musdb18 / bs_roformer_voc_hyperacev2；可调 device、chunk、overlap、stem_batch_size、归一化/标准化。</li>
+            <li>产物一键“用于换源”，直接进入歌曲换源流程。</li>
+          </ul>
+          <h2>7. 混音母带</h2>
+          <ul>
+            <li>多轨输入（分号/换行分隔），逐轨增益、声像、三段 EQ（100Hz/1kHz/8kHz）。</li>
+            <li>输出响度归一 + 真峰值限幅（目标 LUFS 默认 -14，dBTP 默认 -1）。</li>
+            <li>轻量 DSP，定位是“快速可用母带”，不是完整 DAW。</li>
+          </ul>
+          <h2>8. 数据集工作室</h2>
+          <ul>
+            <li>输入 wav 或目录，统一目标采样率（48k/40k/32k）并切 3–10 秒片段 → data/datasets/&lt;名称&gt;/processed。</li>
+            <li>同时生成 metadata；配合“数据集审计”检查静音/削波/重复/缺文本。</li>
+          </ul>
+          <h2>9. 评测器</h2>
+          <ul>
+            <li>客观指标：时长、采样率、声道、削波、静音比例、峰值、RMS；可给参考音频算 SNR。</li>
+            <li>可接 ASR 转写并与预期文本比对（字召回），用于快速验收。</li>
+          </ul>
+          <h2>10. TTS 语音合成（Piper）</h2>
+          <ul>
+            <li>页签“TTS 语音合成”：选择 TTS 音色（data/tts_voices/&lt;模型&gt;/*.onnx + .onnx.json），输入文本直接合成。</li>
+            <li>默认中文音色 huayan；英文可用 lessac；支持批量文本队列。</li>
+          </ul>
+          <h2>11. TTS 批量 / TTS 数据集 / TTS 音源炼制</h2>
+          <ul>
+            <li>TTS 批量：长文本/多段文本批量合成，产物在 artifacts。</li>
+            <li>TTS 数据集：准备训练数据（切片、文本、清洗后的 metadata.cleaned.csv）。</li>
+            <li>TTS 音源炼制：基于 tts-train runtime 训练/微调音色并导出 onnx；质量调优按项目决定封存，当前优先可用性。</li>
+          </ul>
+          <h2>12. MSVC 工具</h2>
+          <ul>
+            <li>把 .msvc 文件转换为 .pth（内嵌模型），转换后可直接作为 RVC 音色使用。</li>
+            <li>index 可选；缺失时 index_rate 自动按 0 处理。</li>
+          </ul>
+          <h2>13. 任务系统与产物</h2>
+          <ul>
+            <li>所有任务进 Gateway 串行 GPU 队列：可看进度/阶段、取消、重试、SSE 实时更新。</li>
+            <li>产物统一 data/artifacts/&lt;job_id&gt;/；任务历史在 data/config/state.db。</li>
+          </ul>
+          <h2>14. 本地优先与隐私</h2>
+          <ul>
+            <li>音频/模型/工程/日志全部在安装根 data；不写 C 盘用户目录；Gateway 只监听 127.0.0.1 + Bearer token。</li>
+            <li>不联网也能做主要音频处理；只有首次安装组件/更新需要联网。</li>
+          </ul>
+          <h2>15. 硬件与快速上手</h2>
+          <ul>
+            <li>推荐 Windows + NVIDIA GPU（CUDA）；RVC/TTS/pymss 都走 GPU，显存不足时降 batch/分段处理。</li>
+            <li>首次使用：安装组件 → 启动 Gateway → 启动内核并安装插件 → 重启内核 → 打开“AMS 音乐”进入 14 页签。</li>
+            <li>最短工作流：数据集工作室准备 → 音源炼制 → 人声分离 → 歌曲换源 → 混音母带 → 评测器确认。</li>
+          </ul>
+          <h2>16. 已知限制</h2>
+          <ul>
+            <li>GitHub 大文件下载偶发中断（可重试；组件已安装会跳过）；启动器尚未做代码签名。</li>
+            <li>TTS 训练听感调优封存；ASR 使用 Vosk 小模型（用于路由/校验，不是最终字幕）。</li>
+            <li>内核任务栏程序图标属于 Kernel 可执行文件，插件只能改界面内 logo/标题，不能改 exe 图标。</li>
+          </ul>
         </div>
       </section>
     </div>
@@ -653,6 +821,8 @@ header { display: flex; justify-content: space-between; align-items: flex-end; m
 .guide-body ul, .guide-body ol { margin: 4px 0 8px; padding-left: 20px; }
 .guide-body li { display: list-item; list-style: inherit; border: 0; padding: 2px 0; justify-content: flex-start; }
 .guide-body a { color: #8fb8ff; }
+.brand-head { display: flex; align-items: center; gap: 14px; }
+.brand-logo { width: 64px; height: 64px; border-radius: 50%; box-shadow: 0 6px 24px rgba(0,0,0,.45); }
 h1 { margin: 0; font-size: 30px; font-weight: 650; letter-spacing: .5px; }
 .sub { margin: 6px 0 0; color: #9aa3ad; font-size: 13px; }
 .tag { background: #2a3a52; color: #9cc4ff; border-radius: 4px; padding: 1px 6px; font-size: 11px; }

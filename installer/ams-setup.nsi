@@ -8,17 +8,17 @@ Unicode true
   !define AMS_VERSION "1.0.0-rc.2"
 !endif
 
-Name "AMS Studio"
-Caption "AMS Studio 安装程序"
+Name "嘉音Studio"
+Caption "嘉音Studio 安装程序"
 OutFile "AMS-Studio-Setup-${AMS_VERSION}.exe"
 InstallDir "F:\AMS-Studio"
 InstallDirRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "InstallLocation"
 RequestExecutionLevel user
-BrandingText "AMS Studio"
+BrandingText "嘉音Studio"
 VIProductVersion "1.0.0.0"
-VIAddVersionKey "ProductName" "AMS Studio"
+VIAddVersionKey "ProductName" "嘉音Studio"
 VIAddVersionKey "CompanyName" "yanmc"
-VIAddVersionKey "FileDescription" "AMS Studio 安装程序"
+VIAddVersionKey "FileDescription" "嘉音Studio 安装程序"
 VIAddVersionKey "FileVersion" "${AMS_VERSION}"
 
 !define MUI_ABORTWARNING
@@ -60,7 +60,7 @@ Section "AMS Studio" SecMain
   Delete "$INSTDIR\AMS-Studio-Uninstall.exe"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayName" "AMS Studio"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayName" "嘉音Studio"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayVersion" "${AMS_VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "Publisher" "yanmc"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "InstallLocation" "$INSTDIR"

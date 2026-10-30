@@ -129,7 +129,7 @@ Write-Host ("[run] makensis: {0}" -f $MakensisPath)
 Push-Location -LiteralPath $installer
 try {
     # 版本号唯一来源 = tauri.conf.json 的 version；通过 /D 注入 ams-setup.nsi
-    & $MakensisPath "/DAMS_VERSION=$expectedVersion" 'ams-setup.nsi'
+    & $MakensisPath "/DAMS_VERSION=$expectedVersion" "/INPUTCHARSET" "UTF8" 'ams-setup.nsi'
     if ($LASTEXITCODE -ne 0) { throw "makensis failed: exit $LASTEXITCODE" }
 } finally {
     Pop-Location

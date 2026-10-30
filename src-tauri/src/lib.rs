@@ -1095,6 +1095,53 @@ fn component_status() -> Vec<ComponentItem> {
         ok: plugin_in_kernel,
     });
 
+    let agent_dir = ams_home().join("components").join("plugin.ams.agent.music");
+    let has_agent_tgz = |prefix: &str| -> bool {
+        fn scan(dir: &Path, prefix: &str, depth: u32) -> bool {
+            if depth > 3 { return false; }
+            let Ok(entries) = fs::read_dir(dir) else { return false; };
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_dir() {
+                    if scan(&path, prefix, depth + 1) { return true; }
+                } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with(prefix)
+                        && name.ends_with(".tgz")
+                        && name.len() > prefix.len()
+                        && name.as_bytes()[prefix.len()].is_ascii_digit()
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        scan(&agent_dir, prefix, 0)
+    };
+    let agent_pkgs = has_agent_tgz("ams-agent-music-")
+        && has_agent_tgz("ams-agent-music-ui-")
+        && has_agent_tgz("ams-agent-music-bundle-");
+    let agent_in_kernel = ams_profile.join("agent-music").is_dir()
+        && ams_profile.join("agent-music-ui").is_dir()
+        && ams_profile.join("agent-music-bundle").is_dir();
+    let agent_state = if agent_in_kernel {
+        "已安装到内核"
+    } else if agent_pkgs {
+        "已下载（未安装到内核）"
+    } else {
+        "未安装"
+    };
+    items.push(ComponentItem {
+        name: "Agent 插件".to_string(),
+        state: agent_state.to_string(),
+        detail: if agent_in_kernel {
+            format!("{}；20 tools + Skill + 内核换标", agent_dir.display())
+        } else {
+            agent_dir.display().to_string()
+        },
+        ok: agent_in_kernel,
+    });
+
     let gateway = gateway_status();
     items.push(ComponentItem {
         name: "Gateway".to_string(),
@@ -2153,7 +2200,81 @@ fn install_music_plugins() -> Result<String, String> {
             return Err(format!("插件安装后缺少模块：{}", modules.join(name).display()));
         }
     }
-    Ok(format!("音乐插件已安装到 {}；请重启 AMS Kernel", profile.display()))
+
+    // ---- Agent 插件（20 tools + Skill + 内核换标 client）----
+    let agent_dir = home.join("components").join("plugin.ams.agent.music");
+    let find_agent_tgz = |prefix: &str| -> Option<PathBuf> {
+        fn scan(dir: &Path, prefix: &str, depth: u32) -> Option<PathBuf> {
+            if depth > 3 || !dir.is_dir() { return None; }
+            let mut dirs = Vec::new();
+            let mut hits: Vec<PathBuf> = Vec::new();
+            for entry in fs::read_dir(dir).ok()?.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with(prefix)
+                        && name.ends_with(".tgz")
+                        && name.len() > prefix.len()
+                        && name.as_bytes()[prefix.len()].is_ascii_digit()
+                    {
+                        hits.push(path);
+                    }
+                }
+            }
+            hits.sort();
+            if let Some(last) = hits.pop() { return Some(last); }
+            for d in dirs {
+                if let Some(found) = scan(&d, prefix, depth + 1) { return Some(found); }
+            }
+            None
+        }
+        scan(&agent_dir, prefix, 0)
+    };
+    let mut agent_installed = 0;
+    for prefix in ["ams-agent-music-", "ams-agent-music-ui-", "ams-agent-music-bundle-"] {
+        let Some(tarball) = find_agent_tgz(prefix) else { continue };
+        let mut command = hidden_command("cmd.exe");
+        command
+            .current_dir(&home)
+            .arg("/c")
+            .arg(&dsh_cmd)
+            .args(["plugin", "--profile", "desktop", "add"])
+            .arg(&tarball)
+            .env("DSH_HOME", &dsh_home)
+            .env("DSH_PROFILE", "desktop")
+            .env("DSH_PROFILE_DIR", &profile);
+        for (key, _) in env::vars_os() {
+            if let Some(k) = key.to_str() {
+                if k.starts_with("DSH_") || k.starts_with("AMS_") {
+                    command.env_remove(k);
+                }
+            }
+        }
+        command.env("DSH_HOME", &dsh_home).env("DSH_PROFILE", "desktop").env("DSH_PROFILE_DIR", &profile);
+        apply_data_cache_env(&mut command, &ams_home());
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+        let output = command.output().map_err(|e| format!("调用 DSH plugin 失败: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return Err(format!("安装 Agent 插件 {} 失败：{}{}", tarball.display(), stdout, stderr));
+        }
+        agent_installed += 1;
+    }
+    if agent_installed > 0 {
+        for name in ["agent-music", "agent-music-ui", "agent-music-bundle"] {
+            if !modules.join(name).is_dir() {
+                return Err(format!("Agent 插件安装后缺少模块：{}", modules.join(name).display()));
+            }
+        }
+    }
+    if agent_installed > 0 {
+        Ok(format!("插件已安装到 {}（音乐插件 + Agent 插件）；请重启 AMS Kernel", profile.display()))
+    } else {
+        Ok(format!("音乐插件已安装到 {}；未发现 Agent 插件组件（可忽略）；请重启 AMS Kernel", profile.display()))
+    }
 }
 
 #[tauri::command]
@@ -2246,6 +2367,18 @@ pub fn run() {
         let _ = fs::write(logs.join("launcher-cleanup-downloads.log"), &line);
         println!("{line}");
         std::process::exit(0);
+    }
+    if args.iter().any(|arg| arg == "--install-plugins") {
+        let result = install_music_plugins();
+        let logs = ams_home().join("logs");
+        fs::create_dir_all(&logs).ok();
+        let line = match &result {
+            Ok(message) => format!("install_plugins ok: {message}"),
+            Err(message) => format!("install_plugins failed: {message}"),
+        };
+        let _ = fs::write(logs.join("launcher-install-plugins.log"), &line);
+        println!("{line}");
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
     }
     if args.iter().any(|arg| arg == "--component-status") {
         // 诊断用：输出与启动器“组件状态”卡片相同的判定结果。
