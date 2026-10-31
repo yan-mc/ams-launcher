@@ -277,7 +277,8 @@ const DATA_LAYOUT_DIRS: &[&str] = &[
     "runtime",
     "tmp",
     "tools",
-    "tts_voices",
+    "tts-gsv",
+    "tts-gsv/voices",
     "voices",
 ];
 
@@ -288,50 +289,13 @@ fn ensure_data_layout() {
     for name in DATA_LAYOUT_DIRS {
         let _ = fs::create_dir_all(home.join(name));
     }
-    seed_tts_voices(&home);
-}
-
-/// Copy the bundled Piper model into data/tts_voices only when the user folder
-/// is empty. The runtime copy remains the fallback; the data copy is editable.
-fn seed_tts_voices(home: &PathBuf) {
-    let src = home.join("runtime").join("tts").join("0.1.0").join("models");
-    let dst_root = home.join("tts_voices");
-    if !src.is_dir() {
-        return;
-    }
-    let has_user_models = fs::read_dir(&dst_root)
-        .map(|entries| entries.filter_map(|entry| entry.ok()).any(|entry| entry.path().extension().and_then(|v| v.to_str()) == Some("onnx") || entry.path().is_dir()))
-        .unwrap_or(false);
-    if has_user_models {
-        return;
-    }
-    let _ = fs::create_dir_all(&dst_root);
-    if let Ok(entries) = fs::read_dir(&src) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|v| v.to_str()) != Some("onnx") {
-                continue;
-            }
-            let Some(stem) = path.file_stem().and_then(|v| v.to_str()) else { continue };
-            let model_dir = dst_root.join(stem);
-            if fs::create_dir_all(&model_dir).is_err() { continue; }
-            let Some(file_name) = path.file_name() else { continue };
-            let _ = fs::copy(&path, model_dir.join(file_name));
-            let config = path.with_extension("onnx.json");
-            if config.is_file() {
-                if let Some(config_name) = config.file_name() {
-                    let _ = fs::copy(&config, model_dir.join(config_name));
-                }
-            }
-        }
-    }
 }
 
 fn data_folder_path(kind: &str) -> Result<PathBuf, String> {
     let home = ams_home();
     let path = match kind {
         "rvc_voices" => home.join("voices"),
-        "tts_voices" => home.join("tts_voices"),
+        "tts_gsv_voices" => home.join("tts-gsv").join("voices"),
         "artifacts" => home.join("artifacts"),
         "projects" => home.join("projects"),
         "datasets" => home.join("datasets"),
@@ -961,9 +925,12 @@ fn start_gateway() -> Result<String, String> {
     };
     command.env("AMS_HOME", &home);
     apply_data_cache_env(&mut command, &home);
-    let tts_root = home.join("runtime").join("tts").join("0.1.0");
-    if tts_root.join("piper").join("piper.exe").is_file() {
-        command.env("AMS_TTS_ROOT", &tts_root);
+    // GPT-SoVITS runtime (new TTS pipeline). Installed at a versioned target;
+    // expose it to the Gateway without requiring a runtime.json edit.
+    let gsv_root = home.join("runtime").join("tts-gsv").join("0.1.0");
+    if gsv_root.join("runtime").join("python.exe").is_file() {
+        command.env("AMS_TTS_GSV_ROOT", &gsv_root);
+        command.env("AMS_TTS_GSV_HOME", home.join("tts-gsv"));
     }
     let runtime = read_runtime_config();
     if !runtime.rvc_python.trim().is_empty() { command.env("AMS_RVC_PYTHON", runtime.rvc_python.trim()); }

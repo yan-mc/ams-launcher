@@ -1,7 +1,7 @@
 {
   "name": "ams-launcher",
   "private": true,
-  "version": "1.1.1",
+  "version": "2.0.0",
   "description": "AMS Studio Launcher (Tauri 2 + Vue 3)",
   "type": "module",
   "scripts": {

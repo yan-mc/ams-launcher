@@ -574,7 +574,7 @@ onUnmounted(() => {
           <button :disabled="voiceBusy" @click="scanVoices">扫描音源</button>
           <button :disabled="voiceBusy" @click="installDefaultVoice">安装默认曼波</button>
           <button @click="openDataFolder('rvc_voices')">打开变声音源目录</button>
-          <button @click="openDataFolder('tts_voices')">打开 TTS 音源目录</button>
+          <button @click="openDataFolder('tts_gsv_voices')">打开 GPT-SoVITS 音色库</button>
         </div>
         <div class="row">
           <input v-model="voiceSource" class="wide-input" placeholder="本地曼波目录或 voicepack.zip 路径" />
@@ -606,7 +606,7 @@ onUnmounted(() => {
         </div>
         <div class="guide-body">
           <h2>整体结构</h2>
-          <p>启动器负责安装、组件、内核/Gateway 和音源；内核是本地工作区；音乐插件提供任务页面；Gateway 和 RVC/pymss/TTS 运行时执行任务。</p>
+          <p>启动器负责安装、组件、内核/Gateway 和音源；内核是本地工作区；音乐插件提供任务页面；Gateway 和 RVC/pymss/GPT-SoVITS 运行时执行任务。</p>
           <h2>首次使用顺序</h2>
           <ol>
             <li>检查并安装全部组件。</li>
@@ -616,7 +616,7 @@ onUnmounted(() => {
           </ol>
           <h2>当前可用功能</h2>
           <ul>
-            <li><b>TTS 语音合成</b>：Piper，默认中文音色；用户音源放在 data/tts_voices。</li>
+            <li><b>GPT-SoVITS 语音合成</b>：默认 V5turbo 48kHz，音色在 data/tts-gsv/voices。</li>
             <li><b>人声分离</b>：pymss，输出 vocals/drums/bass/other stems。</li>
             <li><b>歌曲换源</b>：严格输入已分离纯人声，输出目标音色纯人声，不混伴奏。</li>
             <li><b>MSVC 工具</b>：只把 .msvc 转成 .pth；index 可选，缺失时 index_rate=0。</li>
@@ -625,7 +625,7 @@ onUnmounted(() => {
           <h2>数据在哪里</h2>
           <ul>
             <li>变声音源：data/voices/&lt;名称&gt;/&lt;名称&gt;.pth（+ 可选 index）</li>
-            <li>TTS 音源：data/tts_voices/&lt;模型&gt;/*.onnx + .onnx.json</li>
+            <li>GPT-SoVITS 音色：data/tts-gsv/voices/&lt;id&gt;/voice.json + 权重</li>
             <li>任务产物：data/artifacts/&lt;job_id&gt;/</li>
             <li>外部素材导入：data/projects/imports/</li>
           </ul>
@@ -634,7 +634,7 @@ onUnmounted(() => {
           <h2>功能总览 / Agent 插件</h2>
           <p>全部 14 个音乐页签（音源炼制、实时变声、数据集工作室、混音母带、评测器、项目管理等）均已实现；点击右上角“软件功能总览”和“Agent 插件功能”查看完整说明。</p>
           <h2>上游项目</h2>
-          <p>DSH / Cordis / RVC-Project / pymss-project / Piper。具体版本和许可证以正式发布说明为准。</p>
+          <p>DSH / Cordis / RVC-Project / pymss-project / GPT-SoVITS。具体版本和许可证以正式发布说明为准。</p>
           <h2>安全</h2>
           <p>所有 AMS 数据在安装根 data 下；不修改系统环境变量；Gateway 只监听 127.0.0.1；卸载默认保留用户数据，彻底清理需手动删除安装根。</p>
         </div>
@@ -644,7 +644,7 @@ onUnmounted(() => {
       <section class="guide-panel" role="dialog" aria-modal="true" aria-label="Agent 插件功能">
         <div class="guide-head">
           <div>
-            <h1>Agent 插件功能（20 个工具 + 壁纸 + 音乐制作模式）</h1>
+            <h1>Agent 插件功能（22 个工具 + 壁纸 + 音乐制作模式）</h1>
             <p class="sub">让 AI 在对话里直接操作整套嘉音Studio · 默认只读，写操作需确认</p>
           </div>
           <button class="guide-close" @click="showAgentGuide = false">关闭</button>
@@ -664,16 +664,14 @@ onUnmounted(() => {
           <h2>二、整理与准备（写操作，需确认）</h2>
           <ul>
             <li><b>ams_dataset_clean</b>：安全清理数据集——先给报告和逐文件清单，确认后只移动到 data/trash，不删原件。</li>
-            <li><b>ams_tts_text_clean</b>：TTS 文本清洗（去括号/标签/控制字符、标点规范化），输出 metadata.cleaned.csv，原文件不动。</li>
-            <li><b>ams_dataset_prepare_rvc</b>：把 wav/目录准备成 RVC 训练数据集（统一采样率、切 3–10 秒片段）。</li>
-            <li><b>ams_dataset_prepare_tts</b>：准备 TTS 训练数据集。</li>
+            <li><b>ams_tts_gsv_*</b>：GPT-SoVITS 音色列表/合成/训练/数据集导入。</li>
             <li><b>ams_voice_delete_to_trash</b>：把音色/模型目录移到回收站（可恢复）。</li>
           </ul>
           <h2>三、跑任务（Gateway 串行 GPU 队列）</h2>
           <ul>
             <li><b>ams_job_submit</b>：提交 RVC 训练/换源、pymss 分离、TTS 合成/训练、数据集准备、评测、混音、MSVC 转换。</li>
             <li><b>ams_job_status / ams_job_list / ams_job_wait / ams_job_cancel</b>：查询、列表、等待、取消任务。</li>
-            <li><b>ams_tts_synthesize</b>：直接合成 TTS（需确认）。</li>
+            <li><b>ams_tts_gsv_synthesize</b>：用 GPT-SoVITS 音色合成（需确认）。</li>
             <li><b>ams_transcribe</b>：本地 Vosk 语音转写（音频不上传；依赖/模型自动探测）。</li>
             <li><b>ams_evaluate_audio</b>：客观评测（时长/采样率/峰值/RMS/削波/静音），可选 ASR 转写并算字召回。</li>
           </ul>
@@ -681,7 +679,7 @@ onUnmounted(() => {
           <ul>
             <li><b>Skill：ams-music-processing</b>：让 Agent 知道什么时候用哪个工具、写操作边界、数据集规范、发布检查清单。</li>
             <li>只读写 &lt;安装根&gt;/data，越界直接 PATH_DENIED；没有 shell；删除只进回收站；音频/转写默认不外传。</li>
-            <li>审计日志：data/logs/agent-music-load.log（加载、20 tools 注册、自检）。</li>
+            <li>审计日志：data/logs/agent-music-load.log（加载、22 tools 注册、自检）。</li>
           </ul>
           <h2>五、壁纸与「音乐制作」模式（0.2.2 新增）</h2>
           <ul>
@@ -766,16 +764,15 @@ onUnmounted(() => {
             <li>客观指标：时长、采样率、声道、削波、静音比例、峰值、RMS；可给参考音频算 SNR。</li>
             <li>可接 ASR 转写并与预期文本比对（字召回），用于快速验收。</li>
           </ul>
-          <h2>10. TTS 语音合成（Piper）</h2>
+          <h2>10. GPT-SoVITS 语音合成（V5turbo）</h2>
           <ul>
-            <li>页签“TTS 语音合成”：选择 TTS 音色（data/tts_voices/&lt;模型&gt;/*.onnx + .onnx.json），输入文本直接合成。</li>
-            <li>默认中文音色 huayan；英文可用 lessac；支持批量文本队列。</li>
+            <li>页签“TTS 语音合成（GSV）”：选择 data/tts-gsv/voices 下的音色，输入文本合成 48kHz 音频。</li>
+            <li>默认引擎 V5turbo；V2ProPlus 为回退档。</li>
           </ul>
-          <h2>11. TTS 批量 / TTS 数据集 / TTS 音源炼制</h2>
+          <h2>11. TTS 数据集 / TTS 音源炼制（GSV）</h2>
           <ul>
-            <li>TTS 批量：长文本/多段文本批量合成，产物在 artifacts。</li>
-            <li>TTS 数据集：准备训练数据（切片、文本、清洗后的 metadata.cleaned.csv）。</li>
-            <li>TTS 音源炼制：基于 tts-train runtime 训练/微调音色并导出 onnx；质量调优按项目决定封存，当前优先可用性。</li>
+            <li>TTS 数据集：导入 wav/ + metadata.csv 到 data/tts-gsv/datasets。</li>
+            <li>TTS 音源炼制：V5turbo LoRA + GPT 训练，完成后自动注册到 data/tts-gsv/voices。</li>
           </ul>
           <h2>12. MSVC 工具</h2>
           <ul>
@@ -808,7 +805,7 @@ onUnmounted(() => {
           <h2>17. 已知限制</h2>
           <ul>
             <li>GitHub 大文件下载偶发中断（可重试；组件已安装会跳过）；启动器尚未做代码签名。</li>
-            <li>TTS 训练听感调优封存；ASR 使用 Vosk 小模型（用于路由/校验，不是最终字幕）。</li>
+            <li>GPT-SoVITS 训练听感调优暂按项目决定封存；ASR 使用 Vosk 小模型（用于路由/校验，不是最终字幕）。</li>
             <li>内核任务栏程序图标属于 Kernel 可执行文件，插件只能改界面内 logo/标题，不能改 exe 图标。</li>
           </ul>
         </div>
