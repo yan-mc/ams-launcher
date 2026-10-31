@@ -557,7 +557,7 @@ onUnmounted(() => {
           <button :disabled="pluginBusy" @click="installPlugins">安装插件到内核（音乐 + Agent）</button>
         </div>
         <p v-if="pluginMsg" class="note">{{ pluginMsg }}</p>
-        <p class="note">插件安装需要内核 profile 已初始化：先启动一次 AMS Kernel，停止后再点“安装插件到内核”。会同时安装音乐插件（14 页签）和 Agent 插件（20 个 ams_* 工具 + 内核换标）。</p>
+        <p class="note">插件安装需要内核 profile 已初始化：先启动一次 AMS Kernel，停止后再点“安装插件到内核”。会同时安装音乐插件（14 页签）和 Agent 插件（20 个 ams_* 工具 + 内核换标 + 壁纸 + 音乐制作模式）。</p>
       </div>
 
       <div class="card wide">
@@ -644,7 +644,7 @@ onUnmounted(() => {
       <section class="guide-panel" role="dialog" aria-modal="true" aria-label="Agent 插件功能">
         <div class="guide-head">
           <div>
-            <h1>Agent 插件功能（20 个工具）</h1>
+            <h1>Agent 插件功能（20 个工具 + 壁纸 + 音乐制作模式）</h1>
             <p class="sub">让 AI 在对话里直接操作整套嘉音Studio · 默认只读，写操作需确认</p>
           </div>
           <button class="guide-close" @click="showAgentGuide = false">关闭</button>
@@ -683,7 +683,14 @@ onUnmounted(() => {
             <li>只读写 &lt;安装根&gt;/data，越界直接 PATH_DENIED；没有 shell；删除只进回收站；音频/转写默认不外传。</li>
             <li>审计日志：data/logs/agent-music-load.log（加载、20 tools 注册、自检）。</li>
           </ul>
-          <h2>五、对话示例</h2>
+          <h2>五、壁纸与「音乐制作」模式（0.2.2 新增）</h2>
+          <ul>
+            <li><b>内核壁纸</b>：安装 Agent 插件后，AMS Kernel 页面自动换成嘉音Studio 定制壁纸（插件在页面运行时注入，不修改内核文件）；半透明遮罩保证文字可读，侧栏与主区域会透出壁纸。</li>
+            <li><b>音乐制作模式</b>：新建任务的模式菜单里，除「标准模式」「创造模式」外新增「音乐制作」。选中后：默认加载音乐工具与 ams-music-processing Skill；新会话工作目录自动切到安装目录 data（动态识别 AMS_HOME / Kernel 工作目录 / DSH_HOME，不写死盘符）。</li>
+            <li><b>怎么用</b>：新建任务 → 点“标准模式”下拉 → 选“音乐制作” → 直接描述需求（例如“帮我检查数据集并准备 RVC 训练”），Agent 会在 data 目录下工作。</li>
+            <li>音乐制作模式只影响新会话；标准模式和创造模式保持不变，可随时切换。</li>
+          </ul>
+          <h2>六、对话示例</h2>
           <ul>
             <li>“看看我有哪些音源和数据集，哪个数据集质量有问题？”</li>
             <li>“把 datasets/xianyun640 里太短的片段清掉，先给报告，确认后再移动。”</li>
@@ -791,7 +798,14 @@ onUnmounted(() => {
             <li>首次使用：安装组件 → 启动 Gateway → 启动内核并安装插件 → 重启内核 → 打开“AMS 音乐”进入 14 页签。</li>
             <li>最短工作流：数据集工作室准备 → 音源炼制 → 人声分离 → 歌曲换源 → 混音母带 → 评测器确认。</li>
           </ul>
-          <h2>16. 已知限制</h2>
+          <h2>16. 内核换标、壁纸与音乐制作模式（Agent 插件）</h2>
+          <ul>
+            <li>内核换标：安装 Agent 插件后，AMS Kernel 的窗口标题、左上角/正中间 logo、“DeepSeek / 探索未至之境”等文字自动替换为嘉音Studio（运行时注入客户端插件，不改内核源码）。</li>
+            <li>壁纸：Kernel 页面使用嘉音Studio 定制壁纸；UI 保持半透明层次，文字清晰可读。</li>
+            <li>音乐制作模式：新建任务时可选「音乐制作」，默认加载音乐工具与 Skill，并把会话工作目录切到安装目录 data；适合直接下达音乐制作需求。</li>
+            <li>全部通过 Agent 插件实现；内核 exe 图标仍属内核文件，插件无法修改（界面内 logo、标题、壁纸均已替换）。</li>
+          </ul>
+          <h2>17. 已知限制</h2>
           <ul>
             <li>GitHub 大文件下载偶发中断（可重试；组件已安装会跳过）；启动器尚未做代码签名。</li>
             <li>TTS 训练听感调优封存；ASR 使用 Vosk 小模型（用于路由/校验，不是最终字幕）。</li>

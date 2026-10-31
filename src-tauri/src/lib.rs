@@ -1120,10 +1120,12 @@ fn component_status() -> Vec<ComponentItem> {
     };
     let agent_pkgs = has_agent_tgz("ams-agent-music-")
         && has_agent_tgz("ams-agent-music-ui-")
-        && has_agent_tgz("ams-agent-music-bundle-");
+        && has_agent_tgz("ams-agent-music-bundle-")
+        && has_agent_tgz("ams-agent-music-mode-");
     let agent_in_kernel = ams_profile.join("agent-music").is_dir()
         && ams_profile.join("agent-music-ui").is_dir()
-        && ams_profile.join("agent-music-bundle").is_dir();
+        && ams_profile.join("agent-music-bundle").is_dir()
+        && ams_profile.join("agent-music-mode").is_dir();
     let agent_state = if agent_in_kernel {
         "已安装到内核"
     } else if agent_pkgs {
@@ -1135,7 +1137,7 @@ fn component_status() -> Vec<ComponentItem> {
         name: "Agent 插件".to_string(),
         state: agent_state.to_string(),
         detail: if agent_in_kernel {
-            format!("{}；20 tools + Skill + 内核换标", agent_dir.display())
+            format!("{}；20 tools + Skill + 内核换标 + 壁纸 + 音乐制作模式", agent_dir.display())
         } else {
             agent_dir.display().to_string()
         },
@@ -2232,7 +2234,7 @@ fn install_music_plugins() -> Result<String, String> {
         scan(&agent_dir, prefix, 0)
     };
     let mut agent_installed = 0;
-    for prefix in ["ams-agent-music-", "ams-agent-music-ui-", "ams-agent-music-bundle-"] {
+    for prefix in ["ams-agent-music-", "ams-agent-music-ui-", "ams-agent-music-bundle-", "ams-agent-music-mode-"] {
         let Some(tarball) = find_agent_tgz(prefix) else { continue };
         let mut command = hidden_command("cmd.exe");
         command
@@ -2264,7 +2266,7 @@ fn install_music_plugins() -> Result<String, String> {
         agent_installed += 1;
     }
     if agent_installed > 0 {
-        for name in ["agent-music", "agent-music-ui", "agent-music-bundle"] {
+        for name in ["agent-music", "agent-music-ui", "agent-music-bundle", "agent-music-mode"] {
             if !modules.join(name).is_dir() {
                 return Err(format!("Agent 插件安装后缺少模块：{}", modules.join(name).display()));
             }

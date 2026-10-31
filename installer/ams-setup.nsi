@@ -60,6 +60,12 @@ Section "AMS Studio" SecMain
   Delete "$INSTDIR\AMS-Studio-Uninstall.exe"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
+  ; 桌面 + 开始菜单快捷方式（嘉音Studio）
+  CreateShortCut "$DESKTOP\嘉音Studio.lnk" "$INSTDIR\ams-launcher.exe" "" "$INSTDIR\ams-launcher.exe" 0
+  CreateDirectory "$SMPROGRAMS\嘉音Studio"
+  CreateShortCut "$SMPROGRAMS\嘉音Studio\嘉音Studio.lnk" "$INSTDIR\ams-launcher.exe" "" "$INSTDIR\ams-launcher.exe" 0
+  CreateShortCut "$SMPROGRAMS\嘉音Studio\卸载 嘉音Studio.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\uninstall.exe" 0
+
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayName" "嘉音Studio"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "DisplayVersion" "${AMS_VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio" "Publisher" "yanmc"
@@ -77,6 +83,10 @@ Section "Uninstall"
   ; Legacy duplicate from 1.0.0 setups + the single current uninstaller.
   Delete "$INSTDIR\AMS-Studio-Uninstall.exe"
   Delete "$INSTDIR\uninstall.exe"
+  Delete "$DESKTOP\嘉音Studio.lnk"
+  Delete "$SMPROGRAMS\嘉音Studio\嘉音Studio.lnk"
+  Delete "$SMPROGRAMS\嘉音Studio\卸载 嘉音Studio.lnk"
+  RMDir "$SMPROGRAMS\嘉音Studio"
   RMDir "$INSTDIR"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AMS Studio"
   DeleteRegKey HKCU "Software\yanmc\AMS Studio"
