@@ -745,6 +745,107 @@ fn bundled_node_path() -> PathBuf {
         .join("dependencies").join("node").join("bin").join("node.exe")
 }
 
+/// List immediate versioned subdirectories under a base dir, newest-looking first.
+fn versioned_dirs(base: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = fs::read_dir(base)
+        .ok()
+        .map(|entries| entries.filter_map(|entry| entry.ok()).map(|entry| entry.path()).filter(|path| path.is_dir()).collect())
+        .unwrap_or_default();
+    dirs.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    dirs
+}
+
+fn rvc_python_in(root: &Path) -> Option<PathBuf> {
+    [
+        root.join("runtime").join("python.exe"),
+        root.join("python").join("python.exe"),
+        root.join("python.exe"),
+        root.join("runtime").join("runtime").join("python.exe"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
+/// Resolve a managed RVC runtime by scanning versions, not by assuming 0.1.0.
+fn detect_rvc_runtime(home: &Path, configured_root: &str) -> Option<(PathBuf, PathBuf)> {
+    let mut roots = Vec::new();
+    let configured = PathBuf::from(configured_root.trim());
+    if !configured_root.trim().is_empty() {
+        roots.push(configured);
+    }
+    let base = home.join("runtime").join("rvc");
+    for dir in versioned_dirs(&base) {
+        if !roots.iter().any(|known| known == &dir) {
+            roots.push(dir);
+        }
+    }
+    for root in roots {
+        if let Some(python) = rvc_python_in(&root) {
+            return Some((root, python));
+        }
+    }
+    None
+}
+
+/// Resolve the installed GPT-SoVITS runtime by scanning `runtime/tts-gsv/<version>`.
+fn detect_gsv_runtime(home: &Path) -> Option<PathBuf> {
+    versioned_dirs(&home.join("runtime").join("tts-gsv"))
+        .into_iter()
+        .find(|root| root.join("runtime").join("python.exe").is_file())
+}
+
+/// Resolve the managed VC runtime directory by scanning versions.
+fn detect_vcrun(home: &Path) -> Option<PathBuf> {
+    versioned_dirs(&home.join("tools").join("vcrun"))
+        .into_iter()
+        .find(|root| root.join("vcruntime140.dll").is_file() || root.join("msvcp140.dll").is_file())
+}
+
+/// Find a usable FFmpeg: managed tools dir, ASR libs, installed RVC/GSV runtime.
+fn detect_ffmpeg(home: &Path, rvc_root: Option<&Path>) -> Option<PathBuf> {
+    let mut candidates = vec![
+        home.join("tools").join("ffmpeg").join("ffmpeg.exe"),
+        home.join("tools").join("ffmpeg").join("bin").join("ffmpeg.exe"),
+        home.join("tools").join("asr").join("ffmpeg.exe"),
+    ];
+    if let Some(root) = rvc_root {
+        candidates.push(root.join("ffmpeg.exe"));
+        candidates.push(root.join("runtime").join("ffmpeg.exe"));
+    }
+    for root in versioned_dirs(&home.join("runtime").join("rvc")) {
+        candidates.push(root.join("ffmpeg.exe"));
+        candidates.push(root.join("runtime").join("ffmpeg.exe"));
+    }
+    for root in versioned_dirs(&home.join("runtime").join("tts-gsv")) {
+        candidates.push(root.join("ffmpeg.exe"));
+        candidates.push(root.join("runtime").join("ffmpeg.exe"));
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+/// Resolve an installed pymss runtime by scanning versions.
+fn detect_pymss_runtime(home: &Path) -> Option<(PathBuf, PathBuf)> {
+    for root in versioned_dirs(&home.join("runtime").join("pymss")) {
+        let candidates = [
+            root.join(".venv").join("Scripts").join("python.exe"),
+            root.join("python").join("python.exe"),
+            root.join("python.exe"),
+        ];
+        if let Some(python) = candidates.into_iter().find(|path| path.is_file()) {
+            return Some((root, python));
+        }
+    }
+    None
+}
+
+/// Resolve the managed MSVC tool by scanning versions.
+fn detect_msvc_tool(home: &Path) -> Option<PathBuf> {
+    versioned_dirs(&home.join("tools").join("msvc2pth"))
+        .into_iter()
+        .map(|root| root.join("msvc2pth.py"))
+        .find(|path| path.is_file())
+}
+
 #[tauri::command]
 fn get_environment() -> Vec<EnvItem> {
     let mut items: Vec<EnvItem> = Vec::new();
@@ -780,26 +881,64 @@ fn get_environment() -> Vec<EnvItem> {
         if gateway_exe.is_file() { "已 bundled".to_string() } else { "未安装".to_string() },
         gateway_exe.is_file() && path_is_inside_ams(&gateway_exe),
     ));
+    let home = ams_home();
     let runtime = read_runtime_config();
-    let rvc_python = PathBuf::from(runtime.rvc_python.trim());
-    let rvc_root = PathBuf::from(runtime.rvc_root.trim());
-    let rvc_ok = rvc_python.is_file() && rvc_root.is_dir() && path_is_inside_ams(&rvc_python) && path_is_inside_ams(&rvc_root);
-    items.push(item(
-        "RVC 运行时（受管）",
-        if rvc_ok { rvc_root.display().to_string() } else if runtime.rvc_root.trim().is_empty() { "未配置；请安装 runtime.rvc".to_string() } else { format!("外部路径，需迁移到 data：{}", runtime.rvc_root) },
-        rvc_ok,
-    ));
-    let ffmpeg_candidates = [
-        ams_home().join("tools").join("ffmpeg").join("bin").join("ffmpeg.exe"),
-        rvc_root.join("ffmpeg.exe"),
-    ];
-    let ffmpeg = ffmpeg_candidates.iter().find(|path| path.is_file());
+    let detected_rvc = detect_rvc_runtime(&home, &runtime.rvc_root);
+    let rvc_ok = detected_rvc.is_some();
+    let rvc_message = match &detected_rvc {
+        Some((root, _python)) => root.display().to_string(),
+        None => {
+            let configured = PathBuf::from(runtime.rvc_root.trim());
+            let configured_inside = !runtime.rvc_root.trim().is_empty()
+                && (configured.starts_with(&home) || path_is_inside_ams(&configured));
+            if runtime.rvc_root.trim().is_empty() {
+                "未安装；请安装 runtime.rvc".to_string()
+            } else if configured_inside {
+                format!("受管 runtime 不完整（缺少 python）；请重新安装 runtime.rvc：{}", configured.display())
+            } else {
+                format!("外部路径，需迁移到 data：{}", runtime.rvc_root)
+            }
+        }
+    };
+    items.push(item("RVC 运行时（受管）", rvc_message, rvc_ok));
+    let rvc_root = detected_rvc.as_ref().map(|(root, _)| root.as_path());
+    let ffmpeg = detect_ffmpeg(&home, rvc_root);
     items.push(item(
         "FFmpeg（受管）",
-        match ffmpeg { Some(path) => path.display().to_string(), None => "缺失；需安装 tool.ffmpeg".to_string() },
-        ffmpeg.map(|path| path_is_inside_ams(path)).unwrap_or(false),
+        match ffmpeg.as_ref() {
+            Some(path) => path.display().to_string(),
+            None => "缺失；runtime.rvc 自带 ffmpeg，或放入 data/tools/ffmpeg/bin/ffmpeg.exe".to_string(),
+        },
+        ffmpeg.as_ref().map(|path| path_is_inside_ams(path)).unwrap_or(false),
     ));
-    let voice = ams_home().join("voices").join("曼波").join("曼波.pth");
+    let gsv = detect_gsv_runtime(&home);
+    items.push(item(
+        "GPT-SoVITS 运行时（受管）",
+        match gsv.as_ref() {
+            Some(root) => root.display().to_string(),
+            None => "未安装；请安装 runtime.tts-gsv-core".to_string(),
+        },
+        gsv.is_some(),
+    ));
+    let pymss = detect_pymss_runtime(&home);
+    items.push(item(
+        "pymss 运行时（受管）",
+        match pymss.as_ref() {
+            Some((root, _python)) => root.display().to_string(),
+            None => "未安装；请安装 runtime.pymss".to_string(),
+        },
+        pymss.is_some(),
+    ));
+    let msvc = detect_msvc_tool(&home);
+    items.push(item(
+        "MSVC 工具（受管）",
+        match msvc.as_ref() {
+            Some(path) => path.display().to_string(),
+            None => "未安装；请安装 tool.msvc".to_string(),
+        },
+        msvc.is_some(),
+    ));
+    let voice = home.join("voices").join("曼波").join("曼波.pth");
     items.push(item("曼波音源（内置资产）", if voice.is_file() { "已安装".to_string() } else { "缺失".to_string() }, voice.is_file()));
     let python = run_cmd("py.exe", &["-3", "--version"]);
     let python_ok = !python.is_empty();
@@ -880,7 +1019,22 @@ fn read_runtime_config() -> RuntimeConfig {
 }
 
 #[tauri::command]
-fn runtime_status() -> RuntimeConfig { read_runtime_config() }
+fn runtime_status() -> RuntimeConfig {
+    let mut config = read_runtime_config();
+    let home = ams_home();
+    if let Some((root, python)) = detect_rvc_runtime(&home, &config.rvc_root) {
+        config.rvc_root = root.display().to_string();
+        config.rvc_python = python.display().to_string();
+    }
+    if let Some((root, python)) = detect_pymss_runtime(&home) {
+        config.pymss_root = root.display().to_string();
+        config.pymss_python = python.display().to_string();
+    }
+    if let Some(msvc) = detect_msvc_tool(&home) {
+        config.msvc_tool = msvc.display().to_string();
+    }
+    config
+}
 
 #[tauri::command]
 fn save_runtime(rvc_python: String, rvc_root: String, pymss_python: String, pymss_root: String, msvc_tool: String) -> Result<String, String> {
@@ -925,16 +1079,20 @@ fn start_gateway() -> Result<String, String> {
     };
     command.env("AMS_HOME", &home);
     apply_data_cache_env(&mut command, &home);
-    // GPT-SoVITS runtime (new TTS pipeline). Installed at a versioned target;
-    // expose it to the Gateway without requiring a runtime.json edit.
-    let gsv_root = home.join("runtime").join("tts-gsv").join("0.1.0");
-    if gsv_root.join("runtime").join("python.exe").is_file() {
+    // GPT-SoVITS runtime: scan installed versions instead of hardcoding 0.1.0.
+    if let Some(gsv_root) = detect_gsv_runtime(&home) {
         command.env("AMS_TTS_GSV_ROOT", &gsv_root);
         command.env("AMS_TTS_GSV_HOME", home.join("tts-gsv"));
     }
     let runtime = read_runtime_config();
-    if !runtime.rvc_python.trim().is_empty() { command.env("AMS_RVC_PYTHON", runtime.rvc_python.trim()); }
-    if !runtime.rvc_root.trim().is_empty() { command.env("AMS_RVC_ROOT", runtime.rvc_root.trim()); }
+    let detected_rvc = detect_rvc_runtime(&home, &runtime.rvc_root);
+    if let Some((root, python)) = &detected_rvc {
+        command.env("AMS_RVC_ROOT", root);
+        command.env("AMS_RVC_PYTHON", python);
+    } else {
+        if !runtime.rvc_python.trim().is_empty() { command.env("AMS_RVC_PYTHON", runtime.rvc_python.trim()); }
+        if !runtime.rvc_root.trim().is_empty() { command.env("AMS_RVC_ROOT", runtime.rvc_root.trim()); }
+    }
     let mut pymss_python = runtime.pymss_python.trim().to_string();
     let pymss_original = PathBuf::from(&pymss_python);
     if pymss_original.file_name().and_then(|v| v.to_str()) == Some("python.exe") {
@@ -947,8 +1105,12 @@ fn start_gateway() -> Result<String, String> {
     }
     if !pymss_python.is_empty() { command.env("AMS_PYMSS_PYTHON", &pymss_python); }
     if !runtime.pymss_root.trim().is_empty() { command.env("AMS_PYMSS_ROOT", runtime.pymss_root.trim()); }
-    let vcrun = ams_home().join("tools").join("vcrun").join("0.1.0");
-    if vcrun.is_dir() {
+    if let Some((root, python)) = detect_pymss_runtime(&home) {
+        command.env("AMS_PYMSS_ROOT", &root);
+        command.env("AMS_PYMSS_PYTHON", &python);
+    }
+    // VC runtime: scan installed versions instead of hardcoding 0.1.0.
+    if let Some(vcrun) = detect_vcrun(&home) {
         let old_path = env::var("PATH").unwrap_or_default();
         command.env("PATH", format!("{};{}", vcrun.display(), old_path));
     }
@@ -964,7 +1126,11 @@ fn start_gateway() -> Result<String, String> {
             }
         }
     }
-    if !runtime.msvc_tool.trim().is_empty() { command.env("AMS_MSVC_TOOL", runtime.msvc_tool.trim()); }
+    if let Some(msvc) = detect_msvc_tool(&home) {
+        command.env("AMS_MSVC_TOOL", &msvc);
+    } else if !runtime.msvc_tool.trim().is_empty() {
+        command.env("AMS_MSVC_TOOL", runtime.msvc_tool.trim());
+    }
     // Backend roots are user/environment configuration, never a fixed drive path.
     if let Ok(value) = env::var("AMS_RVC_PYTHON") {
         if !value.trim().is_empty() {
@@ -1104,7 +1270,7 @@ fn component_status() -> Vec<ComponentItem> {
         name: "Agent 插件".to_string(),
         state: agent_state.to_string(),
         detail: if agent_in_kernel {
-            format!("{}；20 tools + Skill + 内核换标 + 壁纸 + 音乐制作模式", agent_dir.display())
+            format!("{}；22 tools + Skill + 内核换标 + 壁纸 + 音乐制作模式", agent_dir.display())
         } else {
             agent_dir.display().to_string()
         },
@@ -1940,7 +2106,9 @@ fn apply_runtime_component_config(asset: &ComponentAsset, target: &PathBuf) -> R
     let changed = match asset.id.as_str() {
         "runtime.rvc" => {
             config.rvc_root = target.display().to_string();
-            config.rvc_python = target.join("runtime").join("python.exe").display().to_string();
+            config.rvc_python = rvc_python_in(target)
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| target.join("runtime").join("python.exe").display().to_string());
             true
         }
         "runtime.pymss" => {
@@ -2170,7 +2338,7 @@ fn install_music_plugins() -> Result<String, String> {
         }
     }
 
-    // ---- Agent 插件（20 tools + Skill + 内核换标 client）----
+    // ---- Agent 插件（22 tools + Skill + 内核换标 client）----
     let agent_dir = home.join("components").join("plugin.ams.agent.music");
     let find_agent_tgz = |prefix: &str| -> Option<PathBuf> {
         fn scan(dir: &Path, prefix: &str, depth: u32) -> Option<PathBuf> {

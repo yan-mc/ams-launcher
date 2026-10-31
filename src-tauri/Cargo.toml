@@ -1,6 +1,6 @@
 [package]
 name = "ams-launcher"
-version = "2.0.0"
+version = "2.0.1"
 description = "AMS Studio Launcher"
 authors = ["you"]
 edition = "2024"
