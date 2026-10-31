@@ -557,7 +557,7 @@ onUnmounted(() => {
           <button :disabled="pluginBusy" @click="installPlugins">安装插件到内核（音乐 + Agent）</button>
         </div>
         <p v-if="pluginMsg" class="note">{{ pluginMsg }}</p>
-        <p class="note">插件安装需要内核 profile 已初始化：先启动一次 AMS Kernel，停止后再点“安装插件到内核”。会同时安装音乐插件（14 页签）和 Agent 插件（20 个 ams_* 工具 + 内核换标 + 壁纸 + 音乐制作模式）。</p>
+        <p class="note">插件安装需要内核 profile 已初始化：先启动一次 AMS Kernel，停止后再点“安装插件到内核”。会同时安装音乐插件（GSV TTS 页签）和 Agent 插件（22 个 ams_* 工具 + 内核换标 + 壁纸 + 音乐制作模式）。</p>
       </div>
 
       <div class="card wide">
