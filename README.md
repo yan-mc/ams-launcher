@@ -1,44 +1,53 @@
-# AMS Studio Launcher
+![嘉音Studio cover](assets/cover.png)
 
-> **AMS Studio 子项目 · 桌面启动器**  
-> 负责把 AMS Studio 的启动、组件安装/更新、内核与本地 Gateway 生命周期、音源库和连接设置收在一个桌面入口里。
+# 嘉音Studio Launcher
 
-AMS Studio 是一个本地优先的 AI 音乐工作站：启动器在这套系统里是“总开关”和“安装器”，不是编辑器本身。它负责：
+> 安装 · 更新 · 环境检测 · 组件管理 · Kernel/Gateway 生命周期
 
-- 安装/更新 AMS 组件（kernel、plugins、gateway、catalog、voicepack）
-- 校验签名/sequence 的更新 feed
-- 启动/停止 AMS Kernel 与本地 Gateway
-- 管理 AMS 数据目录、音源库、连接设置（网址 + Key）
-- 安全卸载：只处理 AMS 自己的安装目录，不触碰现有 DSH 的 `.dsh`
+![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows&logoColor=white)
+![Local First](https://img.shields.io/badge/local--first-data%20stays%20local-2ea44f)
+![Version](https://img.shields.io/badge/version-v2.0.1-eb3c40)
 
-## 技术栈
+## 简介
 
-- Tauri 2 + Vue 3 + TypeScript
-- Rust 后端负责路径、安装/更新、进程生命周期
-- AMS 数据默认位于安装目录下的 `data`
+嘉音Studio 的 Windows 桌面启动器，使用 **Tauri 2 + Vue 3 + Rust**。
+它把一整套本地 AI 音乐环境装好、检查好、启动好：组件下载与校验、环境检测、Gateway/Kernel 启停、插件安装、音源库与更新中心。
 
-## 本地开发
+当前版本 **2.0.1**（启动器环境检测修复版）。
+
+## 核心能力
+
+- 环境检测：Windows/GPU/WebView2/VC++/Node/Gateway/RVC/FFmpeg/GPT-SoVITS/pymss/MSVC/音源/磁盘。
+- 组件安装：读取签名 feed，按分卷下载、校验 SHA256、解包到安装目录。
+- 托管运行时：扫描 `data/runtime/<组件>/<版本>`，不写死版本号。
+- Kernel/Gateway 启停与日志、插件安装、更新中心、默认音色安装。
+
+## 本仓库
+
+主要代码：
+- `src/`：Vue 启动器界面
+- `src-tauri/`：Rust/Tauri 后端与环境检测
+- `installer/`：NSIS 打包脚本与历史安装产物
+
+构建需要 Node.js/pnpm + Rust 工具链；详细构建步骤见 `installer/README` 或项目文档。
+
+## 快速开始
 
 ```powershell
 pnpm install
-pnpm tauri dev
-pnpm tauri build
+pnpm build
+pnpm tauri build --bundles nsis
 ```
 
-## 目录说明
+## 相关链接
 
-| 路径 | 作用 |
-|---|---|
-| `src/` | Vue 启动器界面（组件、内核、Gateway、连接设置） |
-| `src-tauri/src/lib.rs` | Rust 命令：环境、组件安装、内核/Gateway、更新、卸载 |
-| `src-tauri/installer-hooks.nsh` | NSIS 卸载钩子（只清理 AMS 自己的数据） |
+- 总仓库：[yan-mc/AMS-Studio](https://github.com/yan-mc/AMS-Studio)
+- 最新发布：[yan-mc/ams-release releases](https://github.com/yan-mc/ams-release/releases)
+- 当前版本：**嘉音Studio v2.0.1**（feed 2058）
+- 文档：[ams-docs](https://github.com/yan-mc/ams-docs)
 
-## 相关仓库
+## 说明
 
-- 总仓库：https://github.com/yan-mc/AMS-Studio
-- 内核：https://github.com/yan-mc/ams-harness
-- 插件：https://github.com/yan-mc/ams-plugins
-- 服务：https://github.com/yan-mc/ams-services
-- 工具：https://github.com/yan-mc/ams-tools
-- 文档：https://github.com/yan-mc/ams-docs
-- 发布：https://github.com/yan-mc/ams-release
+- 所有音乐数据默认留在安装目录 `data/`；Gateway 只监听 `127.0.0.1`。
+- 本项目为本地优先工具，不提供云端上传；使用第三方模型/音频时请遵守各自许可。
+- License: 项目自有代码按仓库声明；Tauri/Vue 等第三方依赖遵循各自许可证。
